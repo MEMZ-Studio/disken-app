@@ -180,7 +180,8 @@ MIT License - 详见 [LICENSE](LICENSE)
 ## 📮 联系方式
 
 - 项目地址：https://github.com/MEMZ-Studio/disken-app
-- 反馈邮箱：support@disken.app
+- TRAE社区地址：https://forum.trae.cn/t/topic/42832
+- 反馈邮箱：scpmtf496@gmail.com
 
 ---
 
