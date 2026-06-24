@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+out/
+build/
+release/
+
+# Electron runtime
+electron-local/
+electron.zip
+
+# Logs
+*.log
+app-log*.txt
+disken.log
+
+# User data & cache
+userdata/
+session/
+Cache/
+Code Cache/
+GPUCache/
+DawnGraphiteCache/
+DawnWebGPUCache/
+Local Storage/
+Network/
+Session Storage/
+Shared Dictionary/
+Local State
+Preferences
+SharedStorage
+
+# Editor & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temp & test
+temp_*.js
+test-*.js
+find-port.js
+
+# Old copies
+disken-app/

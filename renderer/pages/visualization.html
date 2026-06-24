@@ -1,0 +1,1053 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>空间可视化 - 磁盘精灵</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+.chart-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.chart-box {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.loading { text-align: center; padding: 3rem; color: var(--muted); }
+.spinner {
+  width: 32px; height: 32px;
+  border: 3px solid var(--rule);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin: 0 auto 0.5rem;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-text { font-size: 0.85rem; margin-top: 0.5rem; }
+
+.empty-state { text-align: center; padding: 2rem; }
+.empty-text { color: var(--muted); font-size: 0.9rem; }
+
+.toast {
+  position: fixed;
+  bottom: 2rem; left: 50%;
+  transform: translateX(-50%) translateY(100px);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 0.8rem 1.5rem;
+  font-size: 0.9rem;
+  z-index: 2000;
+  transition: transform 0.3s ease;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+}
+.toast.show { transform: translateX(-50%) translateY(0); }
+.toast.success { border-color: var(--accent2); color: var(--accent2); }
+.toast.error { border-color: var(--danger); color: var(--danger); }
+
+.action-menu {
+  position: fixed;
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 0.4rem;
+  min-width: 200px;
+  z-index: 1500;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+  display: none;
+}
+.action-menu.show { display: block; }
+.action-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.8rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--ink);
+  transition: background 0.15s;
+}
+.action-menu-item:hover { background: var(--surface); }
+.action-menu-item.danger { color: var(--danger); }
+.action-menu-item.danger:hover { background: rgba(239,68,68,0.1); }
+.action-menu-icon { font-size: 1rem; }
+.action-menu-divider {
+  height: 1px;
+  background: var(--rule);
+  margin: 0.3rem 0;
+}
+
+.type-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.type-card {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 0.75rem;
+  text-align: center;
+  transition: border-color 0.2s;
+}
+.type-card:hover { border-color: var(--accent); }
+.type-icon { font-size: 1.5rem; margin-bottom: 0.25rem; }
+.type-name { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem; }
+.type-size { font-size: 1rem; font-weight: 600; color: var(--ink); }
+
+/* Explorer Toolbar */
+.explorer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+.explorer-btn {
+  padding: 0.45rem 0.8rem;
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.explorer-btn:hover { border-color: var(--accent); background: var(--surface); }
+.explorer-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.explorer-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.explorer-btn.primary:hover { background: var(--accent-hover); }
+.explorer-btn.danger { color: var(--danger); }
+.explorer-btn.danger:hover { border-color: var(--danger); background: rgba(239,68,68,0.08); }
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex: 1;
+  min-width: 200px;
+  overflow-x: auto;
+  padding: 0.4rem 0.6rem;
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+.breadcrumb-item {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--muted);
+  transition: all 0.15s;
+}
+.breadcrumb-item:hover { background: var(--surface); color: var(--ink); }
+.breadcrumb-item.active { color: var(--accent); font-weight: 600; cursor: default; }
+.breadcrumb-item.active:hover { background: transparent; }
+.breadcrumb-sep { color: var(--rule); font-size: 0.75rem; }
+
+.explorer-actions-bar {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.explorer-actions-bar .explorer-btn { padding: 0.35rem 0.65rem; font-size: 0.78rem; }
+
+.clipboard-info {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.65rem;
+  background: rgba(16,185,129,0.1);
+  border: 1px solid rgba(16,185,129,0.3);
+  border-radius: 6px;
+  font-size: 0.78rem;
+  color: var(--accent2);
+}
+.clipboard-info button {
+  background: none;
+  border: none;
+  color: var(--accent2);
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0 0.2rem;
+}
+
+.treemap-container {
+  width: 100%;
+  min-height: 520px;
+  position: relative;
+  background: var(--bg);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.explorer-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  margin-top: -1px;
+}
+</style>
+</head>
+<body>
+<script src="utils.js"></script>
+<script src="/_shared/js/echarts.min.js"></script>
+<script>
+(function() {
+  const content = Disken.initPage('visualization', '📁 空间可视化');
+
+  let currentPath = '';
+  let rootTree = null;
+  let currentTree = null;
+  let breadcrumbStack = [];
+  let selectedNode = null;
+  let clipboard = { mode: null, items: [] };
+  let chart = null;
+
+  content.innerHTML = '<div id="dirPickerContainer"></div>' +
+    '<div class="tab-bar" id="visTabs">' +
+      '<button class="tab-btn active" data-tab="treemap">空间分布</button>' +
+      '<button class="tab-btn" data-tab="filetypes">文件类型</button>' +
+    '</div>' +
+    '<div id="tab-treemap">' +
+      '<div class="chart-box">' +
+        '<div class="explorer-toolbar">' +
+          '<button class="explorer-btn" id="btnBack" title="返回上一级">' +
+            '<span>⬅️</span><span>返回</span>' +
+          '</button>' +
+          '<div class="breadcrumb" id="breadcrumb"></div>' +
+          '<button class="explorer-btn" id="btnRefresh" title="刷新">' +
+            '<span>🔄</span><span>刷新</span>' +
+          '</button>' +
+        '</div>' +
+        '<div class="explorer-toolbar">' +
+          '<div class="explorer-actions-bar">' +
+            '<button class="explorer-btn" id="btnOpen" disabled>' +
+              '<span>📂</span><span>打开</span>' +
+            '</button>' +
+            '<button class="explorer-btn" id="btnCopy" disabled>' +
+              '<span>📋</span><span>复制</span>' +
+            '</button>' +
+            '<button class="explorer-btn" id="btnCut" disabled>' +
+              '<span>✂️</span><span>剪切</span>' +
+            '</button>' +
+            '<button class="explorer-btn" id="btnPaste" disabled>' +
+              '<span>📥</span><span>粘贴</span>' +
+            '</button>' +
+            '<button class="explorer-btn" id="btnRename" disabled>' +
+              '<span>✏️</span><span>重命名</span>' +
+            '</button>' +
+            '<button class="explorer-btn danger" id="btnDelete" disabled>' +
+              '<span>🗑️</span><span>删除</span>' +
+            '</button>' +
+          '</div>' +
+          '<div style="flex:1"></div>' +
+          '<div class="clipboard-info" id="clipboardInfo" style="display:none">' +
+            '<span id="clipboardText"></span>' +
+            '<button id="btnClearClipboard" title="清空剪贴板">✕</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="treemap-container" id="treemapContainer">' +
+          '<div class="loading"><div class="spinner"></div><div class="loading-text">请选择目录开始扫描</div></div>' +
+        '</div>' +
+        '<div class="explorer-footer" id="explorerFooter">' +
+          '<span id="footerLeft"></span>' +
+          '<span id="footerRight"></span>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div id="tab-filetypes" style="display:none">' +
+      '<div id="typeGrid" class="type-grid"></div>' +
+      '<div class="chart-box">' +
+        '<div class="chart-title">文件类型分布</div>' +
+        '<div class="chart-container" id="chartFileType" style="min-height:360px"></div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="action-menu" id="actionMenu">' +
+      '<div class="action-menu-item" id="menuOpen">' +
+        '<span class="action-menu-icon">📂</span><span>打开</span>' +
+      '</div>' +
+      '<div class="action-menu-item" id="menuOpenFolder">' +
+        '<span class="action-menu-icon">🗂️</span><span>打开所在文件夹</span>' +
+      '</div>' +
+      '<div class="action-menu-divider"></div>' +
+      '<div class="action-menu-item" id="menuCopy">' +
+        '<span class="action-menu-icon">📋</span><span>复制</span>' +
+      '</div>' +
+      '<div class="action-menu-item" id="menuCut">' +
+        '<span class="action-menu-icon">✂️</span><span>剪切</span>' +
+      '</div>' +
+      '<div class="action-menu-item" id="menuRename">' +
+        '<span class="action-menu-icon">✏️</span><span>重命名</span>' +
+      '</div>' +
+      '<div class="action-menu-divider"></div>' +
+      '<div class="action-menu-item danger" id="menuDelete">' +
+        '<span class="action-menu-icon">🗑️</span><span>删除</span>' +
+      '</div>' +
+    '</div>' +
+    '<div class="toast" id="toast"></div>';
+
+  const toast = document.getElementById('toast');
+  const actionMenu = document.getElementById('actionMenu');
+
+  function showToast(msg, type) {
+    toast.textContent = msg;
+    toast.className = 'toast ' + type;
+    requestAnimationFrame(function() { toast.classList.add('show'); });
+    setTimeout(function() { toast.classList.remove('show'); }, 2500);
+  }
+
+  Disken.addDirPicker('dirPickerContainer', function(path) {
+    currentPath = path;
+    breadcrumbStack = [];
+    selectedNode = null;
+    clipboard = { mode: null, items: [] };
+    loadTreemap();
+    loadFileTypes();
+  });
+
+  document.querySelectorAll('#visTabs .tab-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('#visTabs .tab-btn').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      document.getElementById('tab-treemap').style.display = 'none';
+      document.getElementById('tab-filetypes').style.display = 'none';
+      document.getElementById('tab-' + btn.dataset.tab).style.display = 'block';
+      if (btn.dataset.tab === 'treemap' && chart) {
+        setTimeout(function() { chart.resize(); }, 100);
+      }
+    });
+  });
+
+  function getNodeColor(node, depth) {
+    const extMap = {
+      '图片': '#f59e0b', '视频': '#ef4444', '音频': '#8b5cf6',
+      '文档': '#3b82f6', '压缩包': '#10b981', '程序': '#ec4899',
+      '代码': '#06b6d4', '其他': '#64748b'
+    };
+    const colors = ['#3b82f6','#10b981','#8b5cf6','#f59e0b','#ec4899','#06b6d4','#ef4444','#6366f1','#14b8a6','#f97316'];
+    const name = node.name || '';
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) {
+      hash = ((hash << 5) - hash) + name.charCodeAt(i);
+      hash |= 0;
+    }
+    const idx = Math.abs(hash) % colors.length;
+    const base = colors[idx];
+    if (depth === 0) return base;
+    if (depth === 1) return lightenColor(base, 15);
+    return lightenColor(base, 30);
+  }
+
+  function lightenColor(hex, percent) {
+    const num = parseInt(hex.replace('#',''), 16);
+    const amt = Math.round(2.55 * percent);
+    const R = (num >> 16) + amt;
+    const G = (num >> 8 & 0x00FF) + amt;
+    const B = (num & 0x0000FF) + amt;
+    return '#' + (0x1000000 + (R<255?R<1?0:R:255)*0x10000 + (G<255?G<1?0:G:255)*0x100 + (B<255?B<1?0:B:255)).toString(16).slice(1);
+  }
+
+  function buildEChartsData(node, depth, maxDepth) {
+    if (!node || !node.children || node.children.length === 0) {
+      return { name: node.name || '/', value: node.size || 0, path: node.path, itemStyle: { color: getNodeColor(node, depth) } };
+    }
+    const children = node.children
+      .filter(function(c) { return c.size > 0; })
+      .sort(function(a, b) { return b.size - a.size; })
+      .map(function(c) { return buildEChartsData(c, depth + 1, maxDepth); });
+    return {
+      name: node.name || '/',
+      value: node.size || 0,
+      path: node.path,
+      children: children,
+      itemStyle: { color: getNodeColor(node, depth) }
+    };
+  }
+
+  function findNodeByPath(root, targetPath) {
+    if (!root || !targetPath) return null;
+    if (root.path === targetPath) return root;
+    const children = root.children || [];
+    for (let i = 0; i < children.length; i++) {
+      if (children[i].path === targetPath) return children[i];
+      if (children[i].children) {
+        const found = findNodeByPath(children[i], targetPath);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  function renderBreadcrumb() {
+    const bc = document.getElementById('breadcrumb');
+    if (!currentPath || currentPath === '/') {
+      bc.innerHTML = '<span class="breadcrumb-item active">此电脑</span>';
+      return;
+    }
+    const parts = currentPath.split(/[\\/]+/).filter(Boolean);
+    let html = '<span class="breadcrumb-item" data-action="root">此电脑</span><span class="breadcrumb-sep">›</span>';
+    for (let i = 0; i < parts.length; i++) {
+      const isDrive = i === 0 && /^[A-Za-z]:$/.test(parts[i]);
+      const isLast = i === parts.length - 1;
+      if (isLast) {
+        html += '<span class="breadcrumb-item active">' + parts[i] + (isDrive ? '\\' : '') + '</span>';
+      } else {
+        html += '<span class="breadcrumb-item" data-level="' + i + '">' + parts[i] + (isDrive ? '\\' : '') + '</span>' +
+          '<span class="breadcrumb-sep">›</span>';
+      }
+    }
+    if (breadcrumbStack.length > 0) {
+      for (let j = 0; j < breadcrumbStack.length; j++) {
+        const b = breadcrumbStack[j];
+        html += '<span class="breadcrumb-sep">›</span>';
+        if (j === breadcrumbStack.length - 1) {
+          html += '<span class="breadcrumb-item active">' + b.name + '</span>';
+        } else {
+          html += '<span class="breadcrumb-item" data-sub="' + j + '">' + b.name + '</span>';
+        }
+      }
+    }
+    bc.innerHTML = html;
+
+    bc.querySelectorAll('.breadcrumb-item[data-action="root"]').forEach(function(el) {
+      el.addEventListener('click', function() {
+        breadcrumbStack = [];
+        currentTree = rootTree;
+        renderTreemap();
+        renderBreadcrumb();
+        updateFooter();
+        updateToolbarState();
+      });
+    });
+    bc.querySelectorAll('.breadcrumb-item[data-level]').forEach(function(el) {
+      el.addEventListener('click', function() {
+        const level = parseInt(el.dataset.level);
+        const parts = currentPath.split(/[\\/]+/).filter(Boolean);
+        if (level + 1 >= parts.length) {
+          breadcrumbStack = [];
+          currentTree = rootTree;
+        } else {
+          let node = rootTree;
+          for (let i = 1; i <= level + 1 && node; i++) {
+            const partName = parts[i];
+            node = (node.children || []).find(function(c) { return c.name === partName; });
+          }
+          if (node) {
+            currentTree = node;
+            breadcrumbStack = [];
+          }
+        }
+        renderTreemap();
+        renderBreadcrumb();
+        updateFooter();
+        updateToolbarState();
+      });
+    });
+    bc.querySelectorAll('.breadcrumb-item[data-sub]').forEach(function(el) {
+      el.addEventListener('click', function() {
+        const idx = parseInt(el.dataset.sub);
+        breadcrumbStack = breadcrumbStack.slice(0, idx + 1);
+        const last = breadcrumbStack[breadcrumbStack.length - 1];
+        currentTree = last.node;
+        breadcrumbStack.pop();
+        renderTreemap();
+        renderBreadcrumb();
+        updateFooter();
+        updateToolbarState();
+      });
+    });
+  }
+
+  function renderTreemap() {
+    const container = document.getElementById('treemapContainer');
+    if (!currentTree) {
+      container.innerHTML = '<div class="loading"><div class="spinner"></div><div class="loading-text">请选择目录开始扫描</div></div>';
+      return;
+    }
+
+    const data = buildEChartsData(currentTree, 0, 3);
+    const bg2 = Disken.cssVar('--bg2');
+    const ink = Disken.cssVar('--ink');
+    const bg3 = Disken.cssVar('--bg3') || '#1a1a2e';
+
+    if (chart) { chart.dispose(); chart = null; }
+    chart = echarts.init(container, null, { renderer: 'canvas' });
+
+    chart.setOption({
+      animation: false,
+      tooltip: {
+        trigger: 'item',
+        appendToBody: true,
+        formatter: function(p) {
+          const size = Disken.formatSize(p.value || 0);
+          return '<div style="font-weight:600;margin-bottom:4px">' + p.name + '</div>' +
+            '<div>大小: <strong>' + size + '</strong></div>' +
+            '<div style="color:#888;font-size:11px;margin-top:4px">左键进入 · 右键操作</div>';
+        }
+      },
+      series: [{
+        type: 'treemap',
+        roam: false,
+        data: [data],
+        width: '100%',
+        height: '100%',
+        left: 0,
+        top: 0,
+        breadcrumb: { show: false },
+        label: {
+          show: true,
+          position: 'insideTopLeft',
+          padding: [4, 6, 4, 6],
+          formatter: function(p) {
+            const name = p.name || '';
+            const size = Disken.formatSize(p.value || 0);
+            const isLeaf = !p.data.children || p.data.children.length === 0;
+            if (!isLeaf) return '';
+            if (name.length > 18) {
+              return name.slice(0, 18) + '...\n' + size;
+            }
+            return name + '\n' + size;
+          },
+          color: '#fff',
+          fontSize: 11,
+          fontWeight: 500,
+          textShadowColor: 'rgba(0,0,0,0.6)',
+          textShadowBlur: 3,
+          textShadowOffsetX: 1,
+          textShadowOffsetY: 1
+        },
+        upperLabel: {
+          show: true,
+          position: 'insideTop',
+          height: 22,
+          formatter: function(p) {
+            const name = p.name || '';
+            const size = Disken.formatSize(p.value || 0);
+            if (name.length > 20) {
+              return name.slice(0, 20) + '...  ' + size;
+            }
+            return name + '  ' + size;
+          },
+          color: '#fff',
+          fontSize: 11,
+          fontWeight: 600,
+          textShadowColor: 'rgba(0,0,0,0.7)',
+          textShadowBlur: 2
+        },
+        itemStyle: {
+          borderColor: bg2,
+          borderWidth: 2,
+          gapWidth: 2
+        },
+        levels: [
+          {
+            itemStyle: { borderWidth: 3, borderColor: bg2, gapWidth: 3 },
+            upperLabel: { show: true, height: 24, fontSize: 12, fontWeight: 700 }
+          },
+          {
+            itemStyle: { borderWidth: 2, borderColor: 'rgba(255,255,255,0.15)', gapWidth: 2 },
+            upperLabel: { show: true, height: 20, fontSize: 10, fontWeight: 600 }
+          },
+          {
+            itemStyle: { borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', gapWidth: 1 },
+            upperLabel: { show: false }
+          },
+          {
+            itemStyle: { borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)', gapWidth: 1 },
+            label: { fontSize: 10 }
+          }
+        ],
+        emphasis: {
+          itemStyle: {
+            borderColor: '#fff',
+            borderWidth: 2,
+            shadowBlur: 10,
+            shadowColor: 'rgba(0,0,0,0.3)'
+          }
+        }
+      }]
+    });
+
+    chart.on('click', function(params) {
+      if (!params.data || !params.data.path) return;
+      const targetPath = params.data.path;
+      const target = findNodeByPath(rootTree, targetPath);
+      if (target && target.children && target.children.length > 0) {
+        const pathDiff = targetPath.replace(currentPath, '');
+        const parts = pathDiff.split(/[\\/]+/).filter(Boolean);
+        for (let i = 0; i < parts.length; i++) {
+          breadcrumbStack.push({ name: parts[i], node: currentTree });
+          const next = (currentTree.children || []).find(function(c) { return c.name === parts[i]; });
+          if (next) currentTree = next;
+        }
+        selectedNode = target;
+        renderTreemap();
+        renderBreadcrumb();
+        updateFooter();
+        updateToolbarState();
+      } else if (target) {
+        selectedNode = target;
+        updateToolbarState();
+      }
+    });
+
+    chart.on('contextmenu', function(params) {
+      if (!params || !params.data || !params.data.path) return;
+      const target = findNodeByPath(rootTree, params.data.path);
+      if (target) {
+        selectedNode = target;
+        updateToolbarState();
+        showActionMenu(params.event.offsetX, params.event.offsetY);
+      }
+    });
+
+    window.addEventListener('resize', function() { if (chart) chart.resize(); });
+  }
+
+  function updateFooter() {
+    const left = document.getElementById('footerLeft');
+    const right = document.getElementById('footerRight');
+    if (!currentTree) {
+      left.textContent = '';
+      right.textContent = '';
+      return;
+    }
+    const children = currentTree.children || [];
+    const dirCount = children.filter(function(c) { return c.children && c.children.length > 0; }).length;
+    const fileCount = children.length - dirCount;
+    left.textContent = currentTree.name + ' - ' + children.length + ' 个项目（' + dirCount + ' 个文件夹，' + fileCount + ' 个文件）';
+    right.textContent = '总大小: ' + Disken.formatSize(currentTree.size || 0);
+  }
+
+  function updateToolbarState() {
+    const hasSelection = selectedNode !== null;
+    const hasClipboard = clipboard.items.length > 0;
+    document.getElementById('btnBack').disabled = breadcrumbStack.length === 0;
+    document.getElementById('btnOpen').disabled = !hasSelection;
+    document.getElementById('btnCopy').disabled = !hasSelection;
+    document.getElementById('btnCut').disabled = !hasSelection;
+    document.getElementById('btnRename').disabled = !hasSelection;
+    document.getElementById('btnDelete').disabled = !hasSelection;
+    document.getElementById('btnPaste').disabled = !hasClipboard || !currentTree;
+
+    const clipInfo = document.getElementById('clipboardInfo');
+    if (hasClipboard) {
+      clipInfo.style.display = 'flex';
+      document.getElementById('clipboardText').textContent =
+        (clipboard.mode === 'cut' ? '剪切' : '复制') + ': ' + clipboard.items.length + ' 个项目';
+    } else {
+      clipInfo.style.display = 'none';
+    }
+  }
+
+  async function loadTreemap() {
+    const container = document.getElementById('treemapContainer');
+    selectedNode = null;
+
+    if (!currentPath || currentPath === '/') {
+      container.innerHTML = '<div class="loading"><div class="spinner"></div><div class="loading-text">请选择目录开始扫描</div></div>';
+      renderBreadcrumb();
+      updateFooter();
+      updateToolbarState();
+      return;
+    }
+
+    container.innerHTML = '<div class="loading"><div class="spinner"></div><div class="loading-text">正在扫描磁盘空间...</div></div>';
+    renderBreadcrumb();
+
+    const timeoutPromise = new Promise(function(_, reject) {
+      setTimeout(function() { reject(new Error('扫描超时')); }, 60000);
+    });
+
+    try {
+      const data = await Promise.race([
+        Disken.api('/api/scan?path=' + encodeURIComponent(currentPath) + '&depth=4'),
+        timeoutPromise
+      ]);
+
+      if (!data || !data.tree) {
+        container.innerHTML = '<div class="empty-state"><div class="empty-text">暂无数据</div></div>';
+        return;
+      }
+
+      rootTree = data.tree;
+      currentTree = data.tree;
+      breadcrumbStack = [];
+      renderTreemap();
+      renderBreadcrumb();
+      updateFooter();
+      updateToolbarState();
+    } catch(e) {
+      console.error('loadTreemap error:', e);
+      container.innerHTML = '<div class="empty-state"><div class="empty-text">扫描失败: ' + (e.message || '未知错误') + '</div></div>';
+    }
+  }
+
+  function goBack() {
+    if (breadcrumbStack.length === 0) return;
+    const prev = breadcrumbStack.pop();
+    currentTree = prev.node;
+    selectedNode = null;
+    renderTreemap();
+    renderBreadcrumb();
+    updateFooter();
+    updateToolbarState();
+  }
+
+  document.getElementById('btnBack').addEventListener('click', goBack);
+  document.getElementById('btnRefresh').addEventListener('click', function() {
+    selectedNode = null;
+    breadcrumbStack = [];
+    loadTreemap();
+  });
+
+  function showActionMenu(x, y) {
+    actionMenu.style.left = x + 'px';
+    actionMenu.style.top = y + 'px';
+    actionMenu.classList.add('show');
+    setTimeout(function() {
+      const rect = actionMenu.getBoundingClientRect();
+      if (rect.right > window.innerWidth) {
+        actionMenu.style.left = (window.innerWidth - rect.width - 10) + 'px';
+      }
+      if (rect.bottom > window.innerHeight) {
+        actionMenu.style.top = (y - rect.height) + 'px';
+      }
+    }, 0);
+  }
+
+  function hideActionMenu() {
+    actionMenu.classList.remove('show');
+  }
+
+  document.addEventListener('click', function(e) {
+    if (!actionMenu.contains(e.target)) hideActionMenu();
+  });
+
+  function openFile(filePath) {
+    fetch('/api/open-folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath: filePath })
+    }).catch(function() {});
+  }
+
+  document.getElementById('btnOpen').addEventListener('click', function() {
+    if (!selectedNode) return;
+    if (selectedNode.children && selectedNode.children.length > 0) {
+      breadcrumbStack.push({ name: selectedNode.name, node: currentTree });
+      currentTree = selectedNode;
+      selectedNode = null;
+      renderTreemap();
+      renderBreadcrumb();
+      updateFooter();
+      updateToolbarState();
+    } else {
+      openFile(selectedNode.path);
+    }
+  });
+
+  document.getElementById('btnCopy').addEventListener('click', function() {
+    if (!selectedNode) return;
+    clipboard.mode = 'copy';
+    clipboard.items = [selectedNode.path];
+    updateToolbarState();
+    showToast('已复制到剪贴板', 'success');
+  });
+
+  document.getElementById('btnCut').addEventListener('click', function() {
+    if (!selectedNode) return;
+    clipboard.mode = 'cut';
+    clipboard.items = [selectedNode.path];
+    updateToolbarState();
+    showToast('已剪切到剪贴板', 'success');
+  });
+
+  document.getElementById('btnPaste').addEventListener('click', async function() {
+    if (clipboard.items.length === 0 || !currentTree) return;
+    const targetDir = currentTree.path || currentPath;
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const srcPath of clipboard.items) {
+      try {
+        const fileName = srcPath.split(/[\\/]+/).filter(Boolean).pop();
+        let destPath = targetDir.replace(/[\\/]+$/, '') + '/' + fileName;
+        let counter = 1;
+        let baseName = fileName;
+        let ext = '';
+        const dotIdx = fileName.lastIndexOf('.');
+        if (dotIdx > 0 && dotIdx < fileName.length - 1) {
+          baseName = fileName.slice(0, dotIdx);
+          ext = fileName.slice(dotIdx);
+        }
+        let currentName = fileName;
+        const children = currentTree.children || [];
+        while (children.some(function(c) { return c.name === currentName; })) {
+          currentName = baseName + ' (' + counter + ')' + ext;
+          destPath = targetDir.replace(/[\\/]+$/, '') + '/' + currentName;
+          counter++;
+          if (counter > 100) break;
+        }
+
+        if (clipboard.mode === 'copy') {
+          const res = await fetch('/api/copy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from: srcPath, to: destPath })
+          });
+          const data = await res.json();
+          if (data.success) successCount++;
+          else failCount++;
+        } else {
+          const res = await fetch('/api/move', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ from: srcPath, to: destPath })
+          });
+          const data = await res.json();
+          if (data.success) successCount++;
+          else failCount++;
+        }
+      } catch(e) {
+        failCount++;
+      }
+    }
+
+    if (clipboard.mode === 'cut') {
+      clipboard = { mode: null, items: [] };
+    }
+    selectedNode = null;
+    loadTreemap();
+    if (successCount > 0) showToast('成功 ' + successCount + ' 个项目' + (failCount > 0 ? '，失败 ' + failCount + ' 个' : ''), 'success');
+    else showToast('粘贴失败', 'error');
+  });
+
+  document.getElementById('btnClearClipboard').addEventListener('click', function() {
+    clipboard = { mode: null, items: [] };
+    updateToolbarState();
+  });
+
+  document.getElementById('btnRename').addEventListener('click', function() {
+    if (!selectedNode) return;
+    const srcPath = selectedNode.path;
+    const oldName = selectedNode.name;
+    const newName = prompt('输入新名称：', oldName);
+    if (!newName || newName === oldName) return;
+    const parentPath = srcPath.substring(0, srcPath.length - oldName.length).replace(/[\\/]+$/, '');
+    const newPath = parentPath + '/' + newName;
+    fetch('/api/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: srcPath, to: newPath })
+    }).then(function(r) { return r.json(); }).then(function(data) {
+      if (data.success) {
+        showToast('已重命名', 'success');
+        selectedNode = null;
+        loadTreemap();
+      } else {
+        showToast('重命名失败: ' + (data.error || '未知错误'), 'error');
+      }
+    }).catch(function(e) {
+      showToast('重命名失败: ' + e.message, 'error');
+    });
+  });
+
+  document.getElementById('btnDelete').addEventListener('click', function() {
+    if (!selectedNode) return;
+    const name = selectedNode.name;
+    Disken.showConfirm('确定要删除 "' + name + '" 吗？此操作不可恢复。', async function() {
+      try {
+        const res = await fetch('/api/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filePath: selectedNode.path })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('已删除', 'success');
+          selectedNode = null;
+          loadTreemap();
+        } else {
+          showToast('删除失败: ' + (data.error || '未知错误'), 'error');
+        }
+      } catch(e) {
+        showToast('删除失败: ' + e.message, 'error');
+      }
+    });
+  });
+
+  document.getElementById('menuOpen').addEventListener('click', function() {
+    hideActionMenu();
+    document.getElementById('btnOpen').click();
+  });
+
+  document.getElementById('menuOpenFolder').addEventListener('click', function() {
+    hideActionMenu();
+    if (selectedNode) openFile(selectedNode.path);
+  });
+
+  document.getElementById('menuCopy').addEventListener('click', function() {
+    hideActionMenu();
+    document.getElementById('btnCopy').click();
+  });
+
+  document.getElementById('menuCut').addEventListener('click', function() {
+    hideActionMenu();
+    document.getElementById('btnCut').click();
+  });
+
+  document.getElementById('menuRename').addEventListener('click', function() {
+    hideActionMenu();
+    document.getElementById('btnRename').click();
+  });
+
+  document.getElementById('menuDelete').addEventListener('click', function() {
+    hideActionMenu();
+    document.getElementById('btnDelete').click();
+  });
+
+  document.addEventListener('keydown', function(e) {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+      e.preventDefault();
+      if (selectedNode) document.getElementById('btnCopy').click();
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'x') {
+      e.preventDefault();
+      if (selectedNode) document.getElementById('btnCut').click();
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+      e.preventDefault();
+      document.getElementById('btnPaste').click();
+    } else if (e.key === 'Delete') {
+      e.preventDefault();
+      if (selectedNode) document.getElementById('btnDelete').click();
+    } else if (e.key === 'Backspace') {
+      e.preventDefault();
+      goBack();
+    } else if (e.key === 'Enter') {
+      if (selectedNode) document.getElementById('btnOpen').click();
+    } else if (e.key === 'Escape') {
+      selectedNode = null;
+      updateToolbarState();
+      hideActionMenu();
+    }
+  });
+
+  async function loadFileTypes() {
+    const grid = document.getElementById('typeGrid');
+
+    if (!currentPath || currentPath === '/') {
+      if (grid) {
+        grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="empty-text">请先选择目录</div></div>';
+      }
+      const el = document.getElementById('chartFileType');
+      if (el) el.innerHTML = '';
+      return;
+    }
+
+    if (grid) {
+      grid.innerHTML = '<div class="loading" style="grid-column:1/-1"><div class="spinner"></div><div class="loading-text">正在分析文件类型...</div></div>';
+    }
+
+    const timeoutPromise = new Promise(function(_, reject) {
+      setTimeout(function() { reject(new Error('分析超时')); }, 45000);
+    });
+
+    try {
+      const data = await Promise.race([
+        Disken.api('/api/file-types?path=' + encodeURIComponent(currentPath)),
+        timeoutPromise
+      ]);
+
+      if (!data) {
+        if (grid) grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="empty-text">暂无数据</div></div>';
+        return;
+      }
+      const cats = data.categories || [];
+      const iconMap = { '图片':'🖼️', '视频':'🎬', '音频':'🎵', '文档':'📄', '压缩包':'📦', '程序':'⚙️', '代码':'📜', '其他':'📁' };
+      if (grid) {
+        if (cats.length === 0) {
+          grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="empty-text">暂无数据</div></div>';
+        } else {
+          grid.innerHTML = cats.map(function(c) {
+            return '<div class="type-card">' +
+              '<div class="type-icon">' + (iconMap[c.name] || '📁') + '</div>' +
+              '<div class="type-name">' + c.name + '</div>' +
+              '<div class="type-size">' + c.sizeFormatted + '</div>' +
+              '<div style="font-size:0.7rem;color:var(--muted)">' + c.percent + '%</div>' +
+            '</div>';
+          }).join('');
+        }
+      }
+
+      if (typeof echarts !== 'undefined') {
+        const el = document.getElementById('chartFileType');
+        if (el) {
+          const ftChart = echarts.init(el, null, { renderer: 'svg' });
+          const muted = Disken.cssVar('--muted');
+          const ink = Disken.cssVar('--ink');
+          const rule = Disken.cssVar('--rule');
+          const bg2 = Disken.cssVar('--bg2');
+          ftChart.setOption({
+            animation: false,
+            tooltip: { trigger: 'item', appendToBody: true, formatter: '{b}: {c} ({d}%)' },
+            series: [{
+              type: 'pie',
+              radius: ['40%', '65%'],
+              center: ['50%', '50%'],
+              data: cats.map(function(c) {
+                return { value: c.size, name: c.name, itemStyle: { color: Disken.getCategoryColor(c.name) } };
+              }),
+              label: { color: ink, formatter: '{b}\n{d}%', fontSize: 12 },
+              labelLine: { lineStyle: { color: rule } },
+              itemStyle: { borderRadius: 4, borderColor: bg2, borderWidth: 2 }
+            }]
+          });
+          window.addEventListener('resize', function() { ftChart.resize(); });
+        }
+      }
+    } catch(e) {
+      console.error('loadFileTypes error:', e);
+      if (grid) {
+        grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><div class="empty-text">分析失败: ' + (e.message || '未知错误') + '</div></div>';
+      }
+    }
+  }
+
+  loadTreemap();
+  loadFileTypes();
+})();
+</script>
+</body>
+</html>
