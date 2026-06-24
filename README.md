@@ -1,6 +1,6 @@
 # Disken - 磁盘精灵
 
-![GitHub release (latest by date)](https://img.shields.io/github/v/release/disken-app/disken)
+![GitHub release (latest by date)](https://github.com/MEMZ-Studio/disken-app/releases/tag/v1.0.0)
 ![GitHub All Releases](https://img.shields.io/github/downloads/disken-app/disken/total)
 ![License](https://img.shields.io/github/license/disken-app/disken)
 ![GitHub Stars](https://img.shields.io/github/stars/disken-app/disken?style=social)
