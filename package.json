@@ -25,6 +25,7 @@
     "files": [
       "main.js",
       "server-core.js",
+      "file-index.js",
       "scan-worker.js",
       "renderer/**/*",
       "assets/**/*",

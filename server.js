@@ -4,6 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const core = require('./server-core');
+const { getIndex, getAllStatus } = require('./file-index');
 
 const PORT = 3000;
 const ROOT = __dirname;
@@ -51,18 +52,77 @@ const server = http.createServer((req, res) => {
     return sendJSON(res, { tree: core.scanDirectory(scanPath) });
   }
 
+  // ── 索引相关 API ──
+  if (pathname === '/api/index/status') {
+    const drive = url.searchParams.get('drive') || '';
+    if (drive) {
+      const idx = getIndex(drive);
+      return sendJSON(res, { status: idx.getStatus() });
+    }
+    return sendJSON(res, { all: getAllStatus() });
+  }
+  if (pathname === '/api/index/build') {
+    const drive = core.resolvePath(url.searchParams.get('drive') || '/');
+    if (!core.isValidDir(drive)) return sendJSON(res, { error: '目录不存在' }, 400);
+    const idx = getIndex(drive);
+    if (idx.isBuilding) return sendJSON(res, { error: '正在构建中' }, 400);
+    (async () => {
+      try {
+        const result = await idx.build(drive);
+        sendJSON(res, { success: true, result });
+      } catch(e) {
+        sendJSON(res, { error: e.message }, 500);
+      }
+    })();
+    return;
+  }
+  if (pathname === '/api/index/cancel') {
+    const drive = url.searchParams.get('drive') || '';
+    if (drive) getIndex(drive).cancelBuild();
+    return sendJSON(res, { success: true });
+  }
+  if (pathname === '/api/index/clear') {
+    const drive = url.searchParams.get('drive') || '';
+    if (drive) getIndex(drive).clearCache(drive);
+    return sendJSON(res, { success: true });
+  }
+
   if (pathname === '/api/search') {
     const query = url.searchParams.get('q') || '';
     const searchPath = core.resolvePath(url.searchParams.get('path') || '/');
+    const useIndex = url.searchParams.get('index') !== '0';
+    const maxResults = parseInt(url.searchParams.get('max')) || 200;
     const typeFilter = url.searchParams.get('type') || '';
     const minSize = parseInt(url.searchParams.get('minSize')) || 0;
     const maxSize = parseInt(url.searchParams.get('maxSize')) || 0;
     if (!core.isValidDir(searchPath)) return sendJSON(res, { error: '目录不存在', results: [] }, 400);
-    if (!query.trim()) return sendJSON(res, { results: [], total: 0 });
+    if (!query.trim()) return sendJSON(res, { results: [], fromIndex: false });
+
+    // 优先使用索引搜索
+    if (useIndex) {
+      const driveLetter = searchPath.match(/^([A-Z]:)/i)?.[1] || searchPath;
+      const idx = getIndex(driveLetter);
+      if (idx && idx.files.length > 0) {
+        const startTime = Date.now();
+        const results = idx.search(query, {
+          maxResults, typeFilter, minSize,
+          maxSize: maxSize > 0 ? maxSize : Infinity,
+          searchPath
+        });
+        return sendJSON(res, {
+          results, total: results.length,
+          fromIndex: true, elapsedMs: Date.now() - startTime,
+          indexStatus: idx.getStatus()
+        });
+      }
+    }
+
+    // 回退到实时搜索
     const results = core.searchFiles(searchPath, query, {
-      typeFilter, minSize, maxSize: maxSize > 0 ? maxSize : Infinity
+      maxResults, typeFilter, minSize,
+      maxSize: maxSize > 0 ? maxSize : Infinity
     });
-    return sendJSON(res, { results, total: results.length });
+    return sendJSON(res, { results, total: results.length, fromIndex: false });
   }
 
   if (pathname === '/api/file-types') {

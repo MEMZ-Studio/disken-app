@@ -19,6 +19,7 @@ disken.log
 # User data & cache
 userdata/
 session/
+.disken/
 Cache/
 Code Cache/
 GPUCache/
@@ -42,6 +43,7 @@ Thumbs.db
 temp_*.js
 test-*.js
 find-port.js
+publish-release.js
 
 # Old copies
 disken-app/

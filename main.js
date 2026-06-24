@@ -75,6 +75,21 @@ function startServer() {
 
   // Import server logic
   const { getDisks, getDiskHealth, scanDirectory, searchFiles, analyzeFileTypes, listDirectory, getSystemInfo, resolvePath, isValidDir, formatSize, scanDirectoryAsync, analyzeFileTypesAsync, searchFilesAsync } = require('./server-core');
+  const { getIndex, getAllStatus } = require('./file-index');
+
+  // 自动加载已有缓存（启动时预加载 C 盘索引）
+  (function preloadIndexCache() {
+    try {
+      const drives = getDisks();
+      for (const d of drives) {
+        const idx = getIndex(d.mount);
+        if (idx.hasCache(d.mount)) {
+          const loaded = idx.loadCache(d.mount);
+          if (loaded) console.log(`[Index] 预加载 ${d.mount} 索引: ${idx.fileCount} 个文件`);
+        }
+      }
+    } catch(e) { console.log('[Index] 预加载失败:', e.message); }
+  })();
 
   server = http.createServer((req, res) => {
     const url = new URL(req.url, `http://localhost`);
@@ -108,20 +123,92 @@ function startServer() {
       })();
       return;
     }
+    // ── 索引相关 API ──
+    if (pathname === '/api/index/status') {
+      const drive = url.searchParams.get('drive') || '';
+      if (drive) {
+        const idx = getIndex(drive);
+        return sendJSON(res, { status: idx.getStatus() });
+      }
+      return sendJSON(res, { all: getAllStatus() });
+    }
+    if (pathname === '/api/index/build') {
+      const drive = resolvePath(url.searchParams.get('drive') || '/');
+      if (!isValidDir(drive)) return sendJSON(res, { error: '目录不存在' }, 400);
+      const idx = getIndex(drive);
+      if (idx.isBuilding) return sendJSON(res, { error: '正在构建中' }, 400);
+      (async () => {
+        try {
+          const result = await idx.build(drive);
+          sendJSON(res, { success: true, result });
+        } catch(e) {
+          sendJSON(res, { error: e.message }, 500);
+        }
+      })();
+      return;
+    }
+    if (pathname === '/api/index/cancel') {
+      const drive = url.searchParams.get('drive') || '';
+      if (drive) {
+        const idx = getIndex(drive);
+        idx.cancelBuild();
+      }
+      return sendJSON(res, { success: true });
+    }
+    if (pathname === '/api/index/clear') {
+      const drive = url.searchParams.get('drive') || '';
+      if (drive) {
+        const idx = getIndex(drive);
+        idx.clearCache(drive);
+      }
+      return sendJSON(res, { success: true });
+    }
     if (pathname === '/api/search') {
       const query = url.searchParams.get('q') || '';
       const searchPath = resolvePath(url.searchParams.get('path') || '/');
+      const useIndex = url.searchParams.get('index') !== '0'; // 默认使用索引
+      const maxResults = parseInt(url.searchParams.get('max')) || 200;
       if (!isValidDir(searchPath)) return sendJSON(res, { error: '目录不存在', results: [] }, 400);
-      if (!query.trim()) return sendJSON(res, { results: [] });
+      if (!query.trim()) return sendJSON(res, { results: [], fromIndex: false });
+      const typeFilter = url.searchParams.get('type') || '';
+      const minSize = parseInt(url.searchParams.get('minSize')) || 0;
+      const maxSize = parseInt(url.searchParams.get('maxSize')) || 0;
+
+      // 优先使用索引搜索（瞬间响应）
+      if (useIndex) {
+        // 获取搜索路径所在的盘符
+        const driveLetter = searchPath.match(/^([A-Z]:)/i)?.[1] || searchPath;
+        const idx = getIndex(driveLetter);
+        if (idx && idx.files.length > 0) {
+          const startTime = Date.now();
+          const results = idx.search(query, {
+            maxResults,
+            typeFilter,
+            minSize,
+            maxSize: maxSize > 0 ? maxSize : Infinity,
+            searchPath
+          });
+          const elapsed = Date.now() - startTime;
+          return sendJSON(res, {
+            results,
+            total: results.length,
+            fromIndex: true,
+            elapsedMs: elapsed,
+            indexStatus: idx.getStatus()
+          });
+        }
+      }
+
+      // 回退到实时搜索
       (async () => {
         try {
-          const results = await searchFilesAsync(searchPath, query, { maxResults: 200 });
-          sendJSON(res, { results, total: results.length });
+          const results = await searchFilesAsync(searchPath, query, { maxResults, typeFilter, minSize, maxSize: maxSize > 0 ? maxSize : Infinity });
+          sendJSON(res, { results, total: results.length, fromIndex: false });
         } catch(e) {
           console.log('[API] search error:', e.message);
           try {
             const results = searchFiles(searchPath, query, { maxResults: 50 });
-            sendJSON(res, { results, total: results.length });
+            sendJSON(res, { results, total: results.length, fromIndex: false });
           } catch(e2) {
             sendJSON(res, { error: e.message, results: [] }, 500);
           }
