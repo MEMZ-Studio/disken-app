@@ -389,7 +389,7 @@ const Disken = {
           </a>
         `).join('')}
       </nav>
-      <div class="sidebar-footer">磁盘精灵 v1.0</div>
+      <div class="sidebar-footer">磁盘精灵 v1.2.0</div>
     </aside>`;
   },
 
@@ -408,6 +408,86 @@ const Disken = {
       ${this.topbar(title)}
       <div class="content" id="content"></div>
     </div>`;
+
+    if (window.diskenAPI && window.diskenAPI.onShowAbout) {
+      window.diskenAPI.onShowAbout(() => {
+        Disken.showAbout();
+      });
+    }
+
     return document.getElementById('content');
+  },
+
+  showAbout() {
+    const existing = document.getElementById('diskenAboutOverlay');
+    if (existing) {
+      existing.remove();
+      return;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.id = 'diskenAboutOverlay';
+    overlay.className = 'about-overlay';
+
+    overlay.innerHTML = `
+      <div class="about-modal">
+        <div class="about-header">
+          <div class="about-logo">磁</div>
+          <div class="about-title-group">
+            <h2 class="about-title">磁盘精灵</h2>
+            <div class="about-subtitle">Disken v1.2.0</div>
+          </div>
+        </div>
+        <div class="about-body">
+          <p class="about-desc">
+            简约高效的硬盘管理工具，让你的磁盘空间一目了然。<br/>
+            支持空间可视化、极速搜索、文件类型分析、硬盘健康监控等功能。
+          </p>
+          <div class="about-links">
+            <a href="#" class="about-link" data-action="github">
+              <span class="link-icon">🐙</span> GitHub 仓库
+            </a>
+            <a href="#" class="about-link" data-action="forum">
+              <span class="link-icon">💬</span> 比赛论坛
+            </a>
+            <a href="#" class="about-link" data-action="feedback">
+              <span class="link-icon">📧</span> 反馈建议
+            </a>
+          </div>
+          <div class="about-tech">
+            <span>Electron 33</span>
+            <span>·</span>
+            <span>ECharts</span>
+            <span>·</span>
+            <span>Node.js</span>
+          </div>
+        </div>
+        <div class="about-footer">
+          <button class="about-close-btn" id="aboutCloseBtn">关闭</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const close = () => overlay.remove();
+    document.getElementById('aboutCloseBtn').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) close();
+    });
+
+    overlay.querySelectorAll('.about-link').forEach(link => {
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        const action = link.dataset.action;
+        if (action === 'github') {
+          window.open('https://github.com/MEMZ-Studio/disken-app', '_blank');
+        } else if (action === 'forum') {
+          window.open('https://forum.trae.cn/t/topic/42832', '_blank');
+        } else if (action === 'feedback') {
+          window.location.href = 'mailto:renxplain@qq.com?subject=Disken%20%E7%A1%AC%E7%9B%98%E7%B2%BE%E7%81%B5%20-%20%E5%8F%8D%E9%A6%88';
+        }
+      });
+    });
   }
 };

@@ -1,6 +1,6 @@
 {
   "name": "disken",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Disken - 简约高效的硬盘管理工具",
   "main": "main.js",
   "scripts": {
@@ -24,6 +24,7 @@
     },
     "files": [
       "main.js",
+      "preload.js",
       "server-core.js",
       "file-index.js",
       "scan-worker.js",

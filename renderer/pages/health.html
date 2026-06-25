@@ -13,20 +13,9 @@
 (function() {
   const content = Disken.initPage('health', '🖥️ 硬盘状态');
 
-  // Add refresh button to topbar
-  const topbar = document.querySelector('.topbar');
-  if (topbar) {
-    Disken.addRefreshButton('content', load);
-    const refreshBtn = content.querySelector('.refresh-btn');
-    if (refreshBtn) {
-      refreshBtn.style.marginLeft = 'auto';
-      topbar.appendChild(refreshBtn);
-    }
-  }
-
   content.innerHTML = `<div id="healthGrid" class="health-grid"></div>`;
 
-  // Re-add refresh button to topbar (after innerHTML reset)
+  const topbar = document.querySelector('.topbar');
   if (topbar) {
     Disken.addRefreshButton('content', load);
     const refreshBtn = content.querySelector('.refresh-btn');

@@ -894,6 +894,122 @@ body {
   background: rgba(59, 130, 246, 0.15);
 }
 
+/* ===== About Modal ===== */
+.about-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 3000;
+  backdrop-filter: blur(4px);
+}
+.about-modal {
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 16px;
+  width: 420px;
+  max-width: 90vw;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.about-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.5rem 1.75rem 1rem;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+}
+.about-logo {
+  width: 56px;
+  height: 56px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  font-weight: 700;
+  color: white;
+}
+.about-title {
+  margin: 0;
+  color: white;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+.about-subtitle {
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 0.85rem;
+  margin-top: 2px;
+}
+.about-body {
+  padding: 1.5rem 1.75rem;
+}
+.about-desc {
+  color: var(--ink);
+  font-size: 0.9rem;
+  line-height: 1.7;
+  margin: 0 0 1.25rem 0;
+}
+.about-links {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+.about-link {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.7rem 0.9rem;
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 0.85rem;
+  transition: all 0.15s;
+}
+.about-link:hover {
+  background: var(--surface);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.link-icon {
+  font-size: 1.1rem;
+}
+.about-tech {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.about-footer {
+  padding: 0.75rem 1.75rem 1.25rem;
+  display: flex;
+  justify-content: center;
+}
+.about-close-btn {
+  padding: 0.55rem 2.5rem;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.about-close-btn:hover {
+  opacity: 0.9;
+}
+
 /* ===== Responsive Mobile ===== */
 @media (max-width: 768px) {
   .hamburger { display: flex; }

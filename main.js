@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Menu, shell } = require('electron');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
@@ -384,7 +384,8 @@ async function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      webSecurity: false, // allow local file loading
+      preload: path.join(__dirname, 'preload.js'),
+      webSecurity: false,
     },
     show: false,
     backgroundColor: '#0f1117',
@@ -427,8 +428,99 @@ async function createWindow() {
   });
 }
 
+// ── Chinese Menu ──
+function createMenu() {
+  const template = [
+    {
+      label: '文件',
+      submenu: [
+        {
+          label: '新建窗口',
+          accelerator: 'Ctrl+N',
+          click: () => { createWindow(); }
+        },
+        { type: 'separator' },
+        {
+          label: '退出',
+          accelerator: 'Ctrl+Q',
+          click: () => { app.quit(); }
+        }
+      ]
+    },
+    {
+      label: '编辑',
+      submenu: [
+        { label: '撤销', accelerator: 'Ctrl+Z', role: 'undo' },
+        { label: '重做', accelerator: 'Ctrl+Y', role: 'redo' },
+        { type: 'separator' },
+        { label: '剪切', accelerator: 'Ctrl+X', role: 'cut' },
+        { label: '复制', accelerator: 'Ctrl+C', role: 'copy' },
+        { label: '粘贴', accelerator: 'Ctrl+V', role: 'paste' },
+        { label: '全选', accelerator: 'Ctrl+A', role: 'selectAll' }
+      ]
+    },
+    {
+      label: '视图',
+      submenu: [
+        { label: '重新加载', accelerator: 'Ctrl+R', role: 'reload' },
+        { label: '强制重新加载', accelerator: 'Ctrl+Shift+R', role: 'forceReload' },
+        { type: 'separator' },
+        { label: '放大', accelerator: 'Ctrl+=', role: 'zoomIn' },
+        { label: '缩小', accelerator: 'Ctrl+-', role: 'zoomOut' },
+        { label: '重置缩放', accelerator: 'Ctrl+0', role: 'resetZoom' },
+        { type: 'separator' },
+        { label: '全屏', accelerator: 'F11', role: 'togglefullscreen' }
+      ]
+    },
+    {
+      label: '窗口',
+      submenu: [
+        { label: '最小化', accelerator: 'Ctrl+M', role: 'minimize' },
+        { label: '关闭', accelerator: 'Ctrl+W', role: 'close' }
+      ]
+    },
+    {
+      label: '帮助',
+      submenu: [
+        {
+          label: '关于',
+          click: () => {
+            if (mainWindow) {
+              mainWindow.webContents.send('show-about');
+            }
+          }
+        },
+        {
+          label: '反馈',
+          click: () => {
+            shell.openExternal('mailto:renxplain@qq.com?subject=Disken%20%E7%A1%AC%E7%9B%98%E7%B2%BE%E7%81%B5%20-%20%E5%8F%8D%E9%A6%88');
+          }
+        },
+        { type: 'separator' },
+        {
+          label: 'GitHub 仓库',
+          click: () => {
+            shell.openExternal('https://github.com/MEMZ-Studio/disken-app');
+          }
+        },
+        {
+          label: '开发工具',
+          accelerator: 'F12',
+          role: 'toggleDevTools'
+        }
+      ]
+    }
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
+}
+
 // ── App Events ──
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  createMenu();
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
   if (server) server.close();
