@@ -334,12 +334,14 @@ function getDiskHealthWin() {
       const healthScore = calcHealthScore(healthStatus, opStatus, isSSD, usagePercent, deviceId, model);
 
       // 合并 S.M.A.R.T. 数据
-      const smart = smartMap[parseInt(deviceId, 10)] || {};
-      const temperature = smart.temperature !== undefined ? smart.temperature : null;
-      const powerOnHours = smart.powerOnHours || null;
-      const totalBytesRead = smart.totalBytesRead || null;
-      const totalBytesWritten = smart.totalBytesWritten || null;
-      const smartAvailable = smart.smartAvailable || false;
+      const smart = smartMap[deviceId] || smartMap[String(deviceId)] || {};
+      const temperature = smart.temperature != null ? smart.temperature : null;
+      const powerOnHours = smart.powerOnHours != null && smart.powerOnHours > 0 ? smart.powerOnHours : null;
+      const totalBytesRead = smart.totalBytesRead != null && smart.totalBytesRead > 0 ? smart.totalBytesRead : null;
+      const totalBytesWritten = smart.totalBytesWritten != null && smart.totalBytesWritten > 0 ? smart.totalBytesWritten : null;
+      const isUsb = smart.isUsb === true;
+      const smartUnavailable = smart.smartUnavailable === true;
+      const smartAvailable = (temperature != null || powerOnHours != null || totalBytesRead != null || totalBytesWritten != null);
 
       // 格式化通电时间
       let powerOnDisplay = null;
@@ -369,6 +371,8 @@ function getDiskHealthWin() {
         status: finalScore > 80 ? '健康' : finalScore > 60 ? '注意' : '警告',
         healthScore: finalScore,
         smartAvailable: smartAvailable,
+        smartUnavailable: smartUnavailable,
+        isUsb: isUsb,
         totalBytes: totalBytes,
         availBytes: availBytes,
         total: formatSize(totalBytes),
@@ -380,8 +384,8 @@ function getDiskHealthWin() {
         totalBytesWritten: totalBytesWritten,
         readDisplay: readDisplay,
         writeDisplay: writeDisplay,
-        perfReadBytesPerSec: smart.perfReadBytesPerSec != null ? smart.perfReadBytesPerSec : null,
-        perfWriteBytesPerSec: smart.perfWriteBytesPerSec != null ? smart.perfWriteBytesPerSec : null
+        perfReadBytesPerSec: smart.readPerSec != null ? smart.readPerSec : null,
+        perfWriteBytesPerSec: smart.writePerSec != null ? smart.writePerSec : null
       });
     }
   } catch(e) {

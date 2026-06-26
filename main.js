@@ -3,6 +3,39 @@ const path = require('path');
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
+const { execFileSync } = require('child_process');
+
+function isAdmin() {
+  try {
+    execFileSync('net', ['session'], { stdio: ['ignore', 'ignore', 'ignore'] });
+    return true;
+  } catch(e) {
+    return false;
+  }
+}
+
+function restartAsAdmin() {
+  try {
+    const { spawn } = require('child_process');
+    const exePath = process.execPath;
+    const tmpDir = os.tmpdir();
+    const vbsPath = path.join(tmpDir, 'disken-elevate.vbs');
+    
+    const vbsContent = 'Set sh = CreateObject("Shell.Application")\r\nsh.ShellExecute "' + exePath.replace(/"/g, '""') + '", "", "", "runas", 1\r\n';
+    const buf = Buffer.alloc(2 + vbsContent.length * 2);
+    buf[0] = 0xFF; buf[1] = 0xFE;
+    for (let i = 0; i < vbsContent.length; i++) {
+      buf.writeUInt16LE(vbsContent.charCodeAt(i), 2 + i * 2);
+    }
+    fs.writeFileSync(vbsPath, buf);
+    spawn('wscript.exe', [vbsPath], { detached: true, stdio: 'ignore' }).unref();
+    setTimeout(() => app.quit(), 800);
+    return true;
+  } catch(e) {
+    console.log('[Elevate] Failed:', e.message);
+    return false;
+  }
+}
 
 // ── Early write: confirm main.js is being executed ──
 const _startLog = path.join(os.tmpdir(), 'disken_start.log');
@@ -97,6 +130,11 @@ function startServer() {
 
     if (pathname === '/api/disks') return sendJSON(res, { disks: getDisks() });
     if (pathname === '/api/disk-health') return sendJSON(res, { disks: getDiskHealth() });
+    if (pathname === '/api/admin-status') return sendJSON(res, { isAdmin: isAdmin() });
+    if (pathname === '/api/admin-elevate') {
+      const success = restartAsAdmin();
+      return sendJSON(res, { success });
+    }
     if (pathname === '/api/system-info') return sendJSON(res, getSystemInfo());
     if (pathname === '/api/list-dir') {
       const dirPath = resolvePath(url.searchParams.get('path') || '/');

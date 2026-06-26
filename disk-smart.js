@@ -1,11 +1,10 @@
-// disk-smart.js — Windows 免管理员权限 S.M.A.R.T. 四层读取
-// 第一层: NVMe IOCTL_STORAGE_QUERY_PROPERTY (通过 PowerShell C# P/Invoke)
-// 第二层: SATA SCSI适配器 IOCTL_SCSI_MINIPORT_SMART
-// 第三层: WMI MSFT_PhysicalDisk 兜底
-// 第四层: root\wmi\MSDiskDriver_Performance 累计读写量 + Win32_PerfDisk 速率
 const { execSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
-// ── 工具函数 ──
+let scriptCache = {};
+
 function decodeOutput(buf) {
   if (typeof buf === 'string') return buf;
   if (!Buffer.isBuffer(buf)) return String(buf || '');
@@ -18,18 +17,186 @@ function decodeOutput(buf) {
 
 function safeExec(cmd, timeout) {
   try {
-    const buf = execSync(cmd, { encoding: 'buffer', timeout: timeout || 8000 });
+    const buf = execSync(cmd, { encoding: 'buffer', timeout: timeout || 15000, maxBuffer: 10 * 1024 * 1024 });
     return decodeOutput(buf);
-  } catch(e) { return null; }
+  } catch(e) {
+    return null;
+  }
 }
 
-// ── 第一层 + 第二层: IOCTL 温度/SMART 查询 (通过 PowerShell C# P/Invoke) ──
-function getIOCTLData() {
-  const psScript = `
-Add-Type -ErrorAction SilentlyContinue @"
+function runPsScript(scriptName, psContent, timeout) {
+  try {
+    const scriptPath = path.join(os.tmpdir(), `disken-${scriptName}.ps1`);
+    fs.writeFileSync(scriptPath, '\uFEFF' + psContent, 'utf8');
+    scriptCache[scriptName] = scriptPath;
+  } catch(e) {
+    return null;
+  }
+  const p = scriptCache[scriptName];
+  const out = safeExec(`powershell -NoProfile -ExecutionPolicy Bypass -File "${p}"`, timeout || 20000);
+  if (!out) return null;
+  const trimmed = out.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed;
+  } catch(e) {
+    return null;
+  }
+}
+
+function getPhysicalDisks() {
+  const ps = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
+  [PSCustomObject]@{
+    DeviceID = [string]$_.DeviceID
+    FriendlyName = $_.FriendlyName
+    MediaType = $_.MediaType
+    Size = [int64]$_.Size
+    HealthStatus = $_.HealthStatus
+    OperationalStatus = $_.OperationalStatus
+    BusType = $_.BusType
+  }
+} | ConvertTo-Json -Compress
+`;
+  const r = runPsScript('physical-disks', ps, 10000);
+  if (!r) return [];
+  return Array.isArray(r) ? r : [r];
+}
+
+function getReliabilityData() {
+  const ps = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$results = @()
+Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
+  $pd = $_
+  $temp = $null
+  $poh = $null
+  $tempMax = $null
+  $wear = $null
+  try {
+    $rc = $pd | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue
+    if ($rc) {
+      if ($rc.Temperature -ne $null -and [double]$rc.Temperature -gt 0 -and [double]$rc.Temperature -lt 200) {
+        $temp = [int][double]$rc.Temperature
+      }
+      if ($rc.TemperatureMax -ne $null -and [double]$rc.TemperatureMax -gt 0 -and [double]$rc.TemperatureMax -lt 200) {
+        $tempMax = [int][double]$rc.TemperatureMax
+      }
+      if ($rc.PowerOnHours -ne $null -and [int64]$rc.PowerOnHours -gt 0 -and [int64]$rc.PowerOnHours -lt 5000000) {
+        $poh = [int64]$rc.PowerOnHours
+      }
+      if ($rc.Wear -ne $null -and [double]$rc.Wear -ge 0 -and [double]$rc.Wear -le 100) {
+        $wear = [int][double]$rc.Wear
+      }
+    }
+  } catch {}
+  $results += [PSCustomObject]@{
+    deviceId = [string]$pd.DeviceID
+    temperature = $temp
+    powerOnHours = $poh
+    temperatureMax = $tempMax
+    wear = $wear
+  }
+}
+$results | ConvertTo-Json -Compress
+`;
+  const r = runPsScript('reliability', ps, 25000);
+  if (!r) return {};
+  const items = Array.isArray(r) ? r : [r];
+  const map = {};
+  for (const item of items) {
+    map[String(item.deviceId)] = item;
+  }
+  return map;
+}
+
+function getDiskExtents() {
+  const ps = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$results = @()
+Get-Partition -ErrorAction SilentlyContinue | ForEach-Object {
+  $p = $_
+  $dl = $p | Get-Disk -ErrorAction SilentlyContinue
+  if ($dl) {
+    $vol = $p | Get-Volume -ErrorAction SilentlyContinue
+    $results += [PSCustomObject]@{
+      DiskNumber = [int]$dl.Number
+      DriveLetter = if ($vol -and $vol.DriveLetter) { [string]$vol.DriveLetter } else { $null }
+      Size = [int64]($p.Size)
+    }
+  }
+}
+$results | ConvertTo-Json -Compress
+`;
+  const r = runPsScript('extents', ps, 20000);
+  const map = {};
+  if (r) {
+    const items = Array.isArray(r) ? r : [r];
+    for (const item of items) {
+      const dn = String(item.DiskNumber);
+      if (item.DriveLetter) {
+        if (!map[dn]) map[dn] = [];
+        map[dn].push({ DriveLetter: String(item.DriveLetter), Size: Number(item.Size) || 0 });
+      }
+    }
+    for (const k in map) {
+      map[k].sort((a, b) => b.Size - a.Size);
+    }
+  }
+  return map;
+}
+
+function getPerfCounters() {
+  const ps = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Get-CimInstance Win32_PerfFormattedData_Counters_PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
+  $n = $_.Name
+  $id = $null
+  if ($n -match '^PhysicalDisk (\\d+)' -or $n -match '(\\d+):') {
+    $id = $matches[1]
+  }
+  if ($id) {
+    [PSCustomObject]@{
+      deviceId = $id
+      readPerSec = [int64]($_.DiskReadBytesPerSecond)
+      writePerSec = [int64]($_.DiskWriteBytesPerSecond)
+    }
+  }
+} | ConvertTo-Json -Compress
+`;
+  const r = runPsScript('perfcounters', ps, 15000);
+  const map = {};
+  if (r) {
+    const items = Array.isArray(r) ? r : [r];
+    for (const item of items) {
+      map[String(item.deviceId)] = {
+        readPerSec: Number(item.readPerSec) || 0,
+        writePerSec: Number(item.writePerSec) || 0
+      };
+    }
+  }
+  return map;
+}
+
+function getNvmeSmartData() {
+  const ps = `
+$ErrorActionPreference = 'SilentlyContinue'
+Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
-public class DiskIo {
+public class NvmeSmartResult {
+    public bool ok;
+    public int temp;
+    public int percentUsed;
+    public long dataUnitsRead;
+    public long dataUnitsWritten;
+    public long powerOnHours;
+    public string reason;
+    public int lastError;
+}
+public class NvmeSmartReader {
     [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
     static extern IntPtr CreateFileW(string fn, uint acc, uint share, IntPtr sa, uint cd, uint flags, IntPtr ht);
     [DllImport("kernel32.dll", SetLastError=true)]
@@ -38,242 +205,223 @@ public class DiskIo {
     static extern bool DeviceIoControl(IntPtr h, uint code, IntPtr inBuf, uint inLen, IntPtr outBuf, uint outLen, out uint ret, IntPtr ov);
 
     const uint IOCTL_STORAGE_QUERY_PROPERTY = 0x002D1400;
-    const uint StorageDeviceTemperatureProperty = 12;
-    const uint StorageDeviceProtocolSpecificProperty = 49;
+    const uint GENERIC_READ = 0x80000000;
+    const uint FILE_SHARE_READ = 0x1;
+    const uint FILE_SHARE_WRITE = 0x2;
+    const uint OPEN_EXISTING = 3;
 
-    static IntPtr OpenDevice(string path) {
-        IntPtr h = CreateFileW(path, 0x80000000, 3, IntPtr.Zero, 3, 0x80, IntPtr.Zero);
-        if (h == (IntPtr)(-1) || h == IntPtr.Zero)
-            h = CreateFileW(path, 0x80000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
-        if (h == (IntPtr)(-1) || h == IntPtr.Zero) return IntPtr.Zero;
+    static IntPtr OpenDisk(int diskId) {
+        string p = @"\\\\.\\PhysicalDrive" + diskId;
+        IntPtr h = CreateFileW(p, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+        if (h == (IntPtr)(-1) || h == IntPtr.Zero) {
+            h = CreateFileW(p, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+            if (h == (IntPtr)(-1) || h == IntPtr.Zero) return IntPtr.Zero;
+        }
         return h;
     }
 
-    public static int? GetTemperature(string path) {
-        IntPtr h = OpenDevice(path);
-        if (h == IntPtr.Zero) return null;
+    public static NvmeSmartResult ReadNsid(int diskId, int nsid) {
+        NvmeSmartResult result = new NvmeSmartResult();
+        result.ok = false;
+        result.temp = -1;
+        result.reason = "";
+        IntPtr h = OpenDisk(diskId);
+        if (h == IntPtr.Zero) { result.reason = "cannot open"; return result; }
         try {
-            IntPtr q = Marshal.AllocHGlobal(8);
-            Marshal.WriteInt32(q, 0, (int)StorageDeviceTemperatureProperty);
-            Marshal.WriteInt32(q, 4, 0);
-            IntPtr o = Marshal.AllocHGlobal(1024);
-            uint ret = 0;
-            bool ok = DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, q, 8, o, 1024, out ret, IntPtr.Zero);
-            int? temp = null;
-            if (ok && ret >= 26) {
-                ushort cnt = (ushort)Marshal.ReadInt16(o, 12);
-                if (cnt > 0) { short t = Marshal.ReadInt16(o, 26); if (t > -50 && t < 200) temp = (int)t; }
-            }
-            Marshal.FreeHGlobal(q); Marshal.FreeHGlobal(o);
-            return temp;
-        } catch { return null; } finally { CloseHandle(h); }
-    }
+            int inSize = 64;
+            int outSize = 4096;
+            IntPtr inBuf = Marshal.AllocHGlobal(inSize);
+            IntPtr outBuf = Marshal.AllocHGlobal(outSize);
+            for (int i = 0; i < inSize; i++) Marshal.WriteByte(inBuf, i, 0);
+            for (int i = 0; i < outSize; i++) Marshal.WriteByte(outBuf, i, 0);
 
-    public static object GetNVMeLog(string path) {
-        IntPtr h = OpenDevice(path);
-        if (h == IntPtr.Zero) return null;
-        try {
-            int total = 48;
-            IntPtr q = Marshal.AllocHGlobal(total);
-            Marshal.WriteInt32(q, 0, (int)StorageDeviceProtocolSpecificProperty);
-            Marshal.WriteInt32(q, 4, 0);
-            IntPtr p = IntPtr.Add(q, 8);
-            Marshal.WriteInt32(p, 0, 3);  // ProtocolTypeNvme
-            Marshal.WriteInt32(p, 4, 2);  // NVMeDataTypeLogPage
-            Marshal.WriteInt32(p, 8, 2);  // Log page 02h SMART/Health
-            Marshal.WriteInt32(p, 20, 512);
-            IntPtr o = Marshal.AllocHGlobal(4096);
+            Marshal.WriteInt32(inBuf, 0, 49);
+            Marshal.WriteInt32(inBuf, 4, 0);
+            Marshal.WriteInt32(inBuf, 8, 3);
+            Marshal.WriteInt32(inBuf, 12, 2);
+            Marshal.WriteInt32(inBuf, 16, 2);
+            Marshal.WriteInt32(inBuf, 20, 0);
+            Marshal.WriteInt32(inBuf, 24, 40);
+            Marshal.WriteInt32(inBuf, 28, 512);
+            Marshal.WriteInt32(inBuf, 32, 0);
+            Marshal.WriteInt32(inBuf, 36, 0);
+            Marshal.WriteInt32(inBuf, 40, nsid);
+            Marshal.WriteInt32(inBuf, 44, 0);
+
             uint ret = 0;
-            bool ok = DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, q, (uint)total, o, 4096, out ret, IntPtr.Zero);
-            object result = null;
-            if (ok && ret >= 64) {
-                short tK = Marshal.ReadInt16(o, 2);
-                long duR = Marshal.ReadInt64(o, 32);
-                long duW = Marshal.ReadInt64(o, 48);
-                int tC = tK > 273 ? tK - 273 : tK;
-                // Each data unit = 512 * 1000 bytes (NVMe standard reporting)
-                long br = duR > 0 ? duR * 512000L : 0;
-                long bw = duW > 0 ? duW * 512000L : 0;
-                // If unreasonably large, try 512
-                if (br > 100L * 1024 * 1024 * 1024 * 1024) { br = duR * 512L; bw = duW * 512L; }
-                result = new { temp = (tC > 0 && tC < 200) ? tC : (int?)null, read = br, write = bw };
+            bool ok = DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, inBuf, (uint)inSize, outBuf, (uint)outSize, out ret, IntPtr.Zero);
+            int err = Marshal.GetLastWin32Error();
+            result.lastError = err;
+
+            if (ok && ret > 48) {
+                int dataOff = 8 + 40;
+                short tRaw = Marshal.ReadInt16(outBuf, dataOff + 1);
+                byte pu = Marshal.ReadByte(outBuf, dataOff + 5);
+                ulong dur = (ulong)Marshal.ReadInt64(outBuf, dataOff + 48);
+                ulong duw = (ulong)Marshal.ReadInt64(outBuf, dataOff + 64);
+                ulong poh = (ulong)Marshal.ReadInt64(outBuf, dataOff + 128);
+
+                int tempC = -1;
+                if (tRaw > 300 && tRaw < 500) {
+                    tempC = tRaw - 273;
+                } else if (tRaw > 0 && tRaw < 150) {
+                    tempC = tRaw;
+                }
+
+                bool hasTemp = tempC > 0 && tempC < 150;
+                bool hasPoh = poh > 0 && poh < 5000000;
+                bool hasData = (dur > 0 || duw > 0);
+
+                if (hasTemp || hasPoh || hasData) {
+                    result.ok = true;
+                    result.temp = tempC;
+                    result.percentUsed = (int)pu;
+                    result.dataUnitsRead = (long)dur;
+                    result.dataUnitsWritten = (long)duw;
+                    result.powerOnHours = (long)poh;
+                } else {
+                    result.reason = "invalid data";
+                }
+            } else {
+                result.reason = "ioctl failed";
             }
-            Marshal.FreeHGlobal(q); Marshal.FreeHGlobal(o);
+            Marshal.FreeHGlobal(inBuf);
+            Marshal.FreeHGlobal(outBuf);
             return result;
-        } catch { return null; } finally { CloseHandle(h); }
+        } catch (Exception ex) { result.reason = ex.Message; return result; } finally { CloseHandle(h); }
+    }
+
+    public static NvmeSmartResult Read(int diskId) {
+        // 优先尝试NSID=0（兼容性最好），然后NSID=1，最后广播
+        int[] nsids = { 0, 1, unchecked((int)0xFFFFFFFF) };
+        foreach (int nsid in nsids) {
+            NvmeSmartResult r = ReadNsid(diskId, nsid);
+            if (r.ok) return r;
+        }
+        return ReadNsid(diskId, 0);
     }
 }
-"@
-
-$disks = Get-PhysicalDisk -ErrorAction SilentlyContinue | Select-Object DeviceID, BusType
-$parts = Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | Select-Object DiskNumber, DriveLetter
-$diskLetters = @{}
-foreach ($p in $parts) { $dn = $p.DiskNumber.ToString(); if (-not $diskLetters[$dn]) { $diskLetters[$dn] = @() }; $diskLetters[$dn] += $p.DriveLetter.ToString().ToUpper() }
-
+'@
 $results = @()
-foreach ($d in $disks) {
-    $devId = $d.DeviceID
-    $bt = ($d.BusType -or '').ToString().ToUpper()
-    $temp = $null; $read = $null; $write = $null
-    $letters = $diskLetters[$devId.ToString()]
-    $volPath = if ($letters -and $letters.Count -gt 0) { '\\\\.\\' + $letters[0] + ':' } else { $null }
-    $phyPath = '\\\\.\\PhysicalDrive' + $devId
-
-    # Try volume handle first
-    if ($volPath) {
-        $t = [DiskIo]::GetTemperature($volPath)
-        if ($t) { $temp = $t }
-        $log = [DiskIo]::GetNVMeLog($volPath)
-        if ($log) {
-            if (-not $temp -and $log.temp) { $temp = $log.temp }
-            if ($log.read) { $read = $log.read }
-            if ($log.write) { $write = $log.write }
-        }
+Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.BusType -eq 'NVMe' } | ForEach-Object {
+    $devId = [int]$_.DeviceID
+    $nv = [NvmeSmartReader]::Read($devId)
+    $results += [PSCustomObject]@{
+        deviceId = [string]$devId
+        nvmeResult = $nv
     }
-    # Try physical drive
-    if (-not $temp -or -not $read) {
-        $t = [DiskIo]::GetTemperature($phyPath)
-        if ($t) { $temp = $t }
-        if (-not $read) {
-            $log = [DiskIo]::GetNVMeLog($phyPath)
-            if ($log) {
-                if (-not $temp -and $log.temp) { $temp = $log.temp }
-                if ($log.read) { $read = $log.read }
-                if ($log.write) { $write = $log.write }
-            }
-        }
-    }
-
-    $results += @{ deviceId = $devId; temperature = $temp; totalBytesRead = $read; totalBytesWritten = $write }
 }
-ConvertTo-Json -Compress -Depth 2 @($results)
+$results | ConvertTo-Json -Compress -Depth 3
 `;
-  const out = safeExec(`powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${psScript.replace(/"/g, '\\"')}"`, 20000);
-  if (!out) return [];
-  try {
-    const trimmed = out.trim();
-    if (!trimmed) return [];
-    const parsed = JSON.parse(trimmed);
-    return Array.isArray(parsed) ? parsed : [parsed];
-  } catch(e) { return []; }
+  const r = runPsScript('nvme-smart', ps, 30000);
+  const map = {};
+  if (r) {
+    const items = Array.isArray(r) ? r : [r];
+    for (const item of items) {
+      const nv = item.nvmeResult;
+      if (nv && nv.ok) {
+        const dur = Number(nv.dataUnitsRead) || 0;
+        const duw = Number(nv.dataUnitsWritten) || 0;
+        const temp = Number(nv.temp) || -1;
+        const poh = Number(nv.powerOnHours) || 0;
+        map[String(item.deviceId)] = {
+          temperature: temp > 0 && temp < 150 ? temp : null,
+          powerOnHours: poh > 0 && poh < 20000000 ? poh : null,
+          percentUsed: nv.percentUsed >= 0 && nv.percentUsed <= 100 ? Number(nv.percentUsed) : null,
+          totalBytesRead: dur > 0 ? dur * 512000 : null,
+          totalBytesWritten: duw > 0 ? duw * 512000 : null
+        };
+      }
+    }
+  }
+  return map;
 }
 
-// ── 第三层: WMI Get-PhysicalDisk ──
-function getWmiDiskInfo() {
-  try {
-    const result = execSync(
-      `powershell -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-PhysicalDisk -ErrorAction SilentlyContinue | Select-Object DeviceID,FriendlyName,MediaType,Size,HealthStatus,OperationalStatus,BusType | ConvertTo-Json -Compress"`,
-      { encoding: 'buffer', timeout: 5000 }
-    );
-    const output = decodeOutput(result).trim();
-    if (!output) return [];
-    const parsed = JSON.parse(output);
-    return Array.isArray(parsed) ? parsed : [parsed];
-  } catch (e) { return []; }
-}
-
-// ── 第四层A: root\wmi\MSDiskDriver_Performance 累计读写量 ──
-function getDiskPerformanceCumulative() {
-  try {
-    const out = safeExec(
-      `powershell -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-WmiObject -Namespace 'root\\wmi' -Class 'MSDiskDriver_Performance' -ErrorAction SilentlyContinue | ForEach-Object { @{ deviceId = $_.PerfData.StorageDeviceNumber; bytesRead = $_.PerfData.BytesRead; bytesWritten = $_.PerfData.BytesWritten; readCount = $_.PerfData.ReadCount; writeCount = $_.PerfData.WriteCount } } | ConvertTo-Json -Compress"`,
-      10000
-    );
-    if (!out) return [];
-    const trimmed = out.trim();
-    if (!trimmed) return [];
-    const parsed = JSON.parse(trimmed);
-    return Array.isArray(parsed) ? parsed : [parsed];
-  } catch (e) { return []; }
-}
-
-// ── 第四层B: Win32_PerfFormattedData_PerfDisk_PhysicalDisk 实时速率 ──
-function getDiskPerfRates() {
-  try {
-    const out = safeExec(
-      `powershell -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-CimInstance Win32_PerfFormattedData_PerfDisk_PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne '_Total' } | Select-Object Name,DiskReadBytesPersec,DiskWriteBytesPersec | ConvertTo-Json -Compress"`,
-      5000
-    );
-    if (!out) return [];
-    const trimmed = out.trim();
-    if (!trimmed) return [];
-    const parsed = JSON.parse(trimmed);
-    return Array.isArray(parsed) ? parsed : [parsed];
-  } catch (e) { return []; }
-}
-
-// ── 主入口 ──
 function getAllDiskSmart() {
-  const wmiDisks = getWmiDiskInfo();
-  if (wmiDisks.length === 0) return [];
+  const disks = getPhysicalDisks();
+  const extents = getDiskExtents();
+  const relData = getReliabilityData();
+  const nvmeData = getNvmeSmartData();
+  const perfData = getPerfCounters();
 
-  // 并行获取所有数据源
-  const ioctlData = getIOCTLData();
-  const perfCumulative = getDiskPerformanceCumulative();
-  const perfRates = getDiskPerfRates();
-
-  // 构建 IOCTL 数据映射
-  const ioctlMap = {};
-  for (const d of ioctlData) {
-    ioctlMap[d.deviceId] = d;
-  }
-
-  // 构建累计读写映射
-  const cumMap = {};
-  for (const d of perfCumulative) {
-    cumMap[d.deviceId] = d;
-  }
-
-  // 构建速率映射
-  const rateMap = {};
-  for (const d of perfRates) {
-    const name = d.Name || '';
-    const match = name.match(/^(\d+)/);
-    if (match) {
-      rateMap[parseInt(match[1], 10)] = d;
+  const driveLetterMap = {};
+  for (const dk of Object.keys(extents)) {
+    if (extents[dk] && extents[dk].length > 0) {
+      driveLetterMap[dk] = extents[dk][0].DriveLetter;
     }
   }
 
-  const disks = [];
-  for (const wd of wmiDisks) {
-    const deviceId = parseInt(wd.DeviceID, 10);
-    const ioctl = ioctlMap[deviceId] || {};
-    const cum = cumMap[deviceId] || {};
-    const rate = rateMap[deviceId] || {};
+  return disks.map(d => {
+    const devId = String(d.DeviceID);
+    const rel = relData[devId] || {};
+    const nv = nvmeData[devId] || {};
+    const pf = perfData[devId] || {};
+    const driveLetter = driveLetterMap[devId] || null;
+    const busType = d.BusType || 'Unknown';
 
-    // 温度: IOCTL 优先
-    let temperature = (ioctl.temperature !== null && ioctl.temperature !== undefined)
-      ? ioctl.temperature : null;
+    let temperature = null;
+    let powerOnHours = null;
+    let totalBytesRead = null;
+    let totalBytesWritten = null;
+    let healthPercent = null;
+    let dataSource = 'none';
+    let smartUnavailable = false;
 
-    // 累计读写: IOCTL (NVMe log) 优先, 否则 MSDiskDriver_Performance
-    let totalBytesRead = (ioctl.totalBytesRead !== null && ioctl.totalBytesRead !== undefined)
-      ? ioctl.totalBytesRead : (cum.bytesRead || null);
-    let totalBytesWritten = (ioctl.totalBytesWritten !== null && ioctl.totalBytesWritten !== undefined)
-      ? ioctl.totalBytesWritten : (cum.bytesWritten || null);
+    const isUsb = busType === 'USB';
 
-    // 如果累计读写来自 MSDiskDriver_Performance 且值太小（可能是刚开机），保留但标注
-    const smartAvailable = temperature !== null || totalBytesRead !== null || totalBytesWritten !== null;
+    if (nv.temperature != null) {
+      temperature = nv.temperature;
+      dataSource = 'nvme_smart';
+    } else if (rel.temperature != null) {
+      temperature = rel.temperature;
+      dataSource = 'reliability_counter';
+    }
 
-    disks.push({
-      deviceId: deviceId,
-      model: wd.FriendlyName || ('磁盘' + deviceId),
-      mediaType: wd.MediaType || 'Unknown',
-      busType: (wd.BusType || '').toUpperCase(),
-      size: parseInt(wd.Size, 10) || 0,
-      healthStatus: wd.HealthStatus || 'Unknown',
-      operationalStatus: wd.OperationalStatus || 'Unknown',
+    if (nv.powerOnHours != null) {
+      powerOnHours = nv.powerOnHours;
+      dataSource = 'nvme_smart';
+    } else if (rel.powerOnHours != null) {
+      powerOnHours = rel.powerOnHours;
+      if (dataSource === 'none') dataSource = 'reliability_counter';
+    }
+
+    if (nv.totalBytesRead != null) totalBytesRead = nv.totalBytesRead;
+    if (nv.totalBytesWritten != null) totalBytesWritten = nv.totalBytesWritten;
+    if (nv.percentUsed != null) {
+      healthPercent = Math.max(0, Math.min(100, 100 - nv.percentUsed));
+    } else if (rel.wear != null) {
+      healthPercent = Math.max(0, Math.min(100, 100 - rel.wear));
+    }
+
+    if (isUsb) {
+      smartUnavailable = true;
+      dataSource = 'usb_unavailable';
+    } else if (temperature == null && powerOnHours == null && totalBytesRead == null && totalBytesWritten == null) {
+      smartUnavailable = true;
+    }
+
+    return {
+      deviceId: d.DeviceID,
+      model: d.FriendlyName || 'Unknown Disk',
+      interfaceType: busType,
+      mediaType: d.MediaType || 'Unspecified',
+      capacity: d.Size || 0,
+      health: d.HealthStatus || 'Unknown',
+      healthPercent: healthPercent,
       temperature: temperature,
-      powerOnHours: null,
+      powerOnHours: powerOnHours,
       totalBytesRead: totalBytesRead,
       totalBytesWritten: totalBytesWritten,
-      perfReadBytesPerSec: parseInt(rate.DiskReadBytesPersec, 10) || 0,
-      perfWriteBytesPerSec: parseInt(rate.DiskWriteBytesPersec, 10) || 0,
-      smartAvailable: smartAvailable,
-      dataSource: temperature !== null ? 'ioctl' : (cum.bytesRead ? 'perf_counter' : 'none')
-    });
-  }
-
-  return disks;
+      totalReads: null,
+      totalWrites: null,
+      driveLetter: driveLetter,
+      readPerSec: pf.readPerSec || 0,
+      writePerSec: pf.writePerSec || 0,
+      dataSource: dataSource,
+      smartUnavailable: smartUnavailable,
+      isUsb: isUsb
+    };
+  });
 }
 
-module.exports = { getAllDiskSmart, getDiskPerfRates, getWmiDiskInfo };
+module.exports = { getAllDiskSmart };

@@ -390,7 +390,7 @@ const Disken = {
           </a>
         `).join('')}
       </nav>
-      <div class="sidebar-footer">磁盘精灵 v1.4.1</div>
+      <div class="sidebar-footer">磁盘精灵 v1.4.2</div>
     </aside>`;
   },
 
