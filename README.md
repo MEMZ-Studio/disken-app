@@ -113,6 +113,7 @@ npm run build:win
 disken/
 ├── main.js              # Electron 主进程入口
 ├── server-core.js       # 后端 API 服务核心
+├── disk-smart.js        # 四层 S.M.A.R.T. 数据读取模块
 ├── file-index.js        # 文件索引管理模块
 ├── scan-worker.js       # 文件扫描 Worker
 ├── renderer/            # 渲染进程（前端页面）
@@ -148,6 +149,29 @@ disken/
 ---
 
 ## 📝 更新日志
+
+### v1.3.0
+- ✅ 新增四层 S.M.A.R.T. 数据读取架构（免管理员权限）
+  - 第一层：NVMe `IOCTL_STORAGE_QUERY_PROPERTY` 温度查询
+  - 第二层：SATA `IOCTL_SCSI_MINIPORT` SMART 数据读取
+  - 第三层：WMI `MSFT_PhysicalDisk` 兜底
+  - 第四层：`MSDiskDriver_Performance` 累计读写量 + 实时速率
+- ✅ 硬盘状态页面显示总计读取/写入数据
+- ✅ 显示实时读写速率（R/W KB/s）
+- ✅ 优化健康分数算法，各硬盘分数差异化
+- ✅ 修复中文编码乱码问题（GBK → UTF-8 自动检测）
+- ✅ 移除 Linux 命令，纯 Windows 平台优化
+- ✅ 优化启动性能（缓存层 + 异步预加载）
+- ✅ 移除 koffi 依赖，改用 PowerShell C# P/Invoke
+
+### v1.2.0
+- ✅ 概览页显示完整 Windows 版本信息（如 "Windows 11 专业工作站版 22H2"）
+- ✅ 新增磁盘通电时间、总计读取、总计写入显示
+- ✅ 硬盘状态页新增 S.M.A.R.T. 状态指示
+- ✅ 使用 StorageReliabilityCounter 获取 S.M.A.R.T. 数据
+- ✅ 帮助菜单新增「关于」和「反馈」入口
+- ✅ 搜索支持双重点击打开文件/文件夹
+- ✅ 右键菜单支持打开、在资源管理器中显示、复制路径
 
 ### v1.0.0
 - ✅ 实现磁盘概览功能

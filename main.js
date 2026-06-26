@@ -77,8 +77,8 @@ function startServer() {
   const { getDisks, getDiskHealth, scanDirectory, searchFiles, analyzeFileTypes, listDirectory, getSystemInfo, resolvePath, isValidDir, formatSize, scanDirectoryAsync, analyzeFileTypesAsync, searchFilesAsync } = require('./server-core');
   const { getIndex, getAllStatus } = require('./file-index');
 
-  // 自动加载已有缓存（启动时预加载 C 盘索引）
-  (function preloadIndexCache() {
+  // 自动加载已有缓存（启动时预加载，延迟执行避免阻塞服务器启动）
+  setImmediate(() => {
     try {
       const drives = getDisks();
       for (const d of drives) {
@@ -89,7 +89,7 @@ function startServer() {
         }
       }
     } catch(e) { console.log('[Index] 预加载失败:', e.message); }
-  })();
+  });
 
   server = http.createServer((req, res) => {
     const url = new URL(req.url, `http://localhost`);

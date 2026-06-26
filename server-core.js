@@ -1,12 +1,26 @@
-// Disken Server Core — 跨平台模块（Windows/macOS/Linux）
+// Disken Server Core — Windows 平台专用
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const os = require('os');
 const { Worker } = require('worker_threads');
+const { getAllDiskSmart } = require('./disk-smart');
 
 const isWin = process.platform === 'win32';
-const isMac = process.platform === 'darwin';
+
+function decodeOutput(buf) {
+  if (typeof buf === 'string') return buf;
+  if (!Buffer.isBuffer(buf)) return String(buf || '');
+  const str = buf.toString('utf8');
+  if (str.includes('\ufffd')) {
+    try {
+      return buf.toString('gbk');
+    } catch(e) {
+      return str;
+    }
+  }
+  return str;
+}
 
 // Resolve worker path — works both in dev and in asar packaging
 function getWorkerPath() {
@@ -78,7 +92,7 @@ function runWorker(task, dirPath, options = {}) {
 
 // ── Utility ──
 function resolvePath(input) {
-  if (!input || input === '/') return isWin ? 'C:\\' : '/';
+  if (!input || input === '/') return 'C:\\';
   const cleaned = path.normalize(input).replace(/^(\.\.(\/|\\|$))+/, '');
   if (!path.isAbsolute(cleaned)) return path.resolve(cleaned);
   return cleaned;
@@ -96,14 +110,17 @@ function formatSize(bytes) {
 }
 
 function safeExec(cmd, opts) {
-  try { return execSync(cmd, { encoding: 'utf8', timeout: opts?.timeout || 5000, ...opts }); }
+  try {
+    const buf = execSync(cmd, { encoding: 'buffer', timeout: opts?.timeout || 5000, ...opts });
+    return decodeOutput(buf);
+  }
   catch(e) { return null; }
 }
 
 // Run PowerShell command and return parsed JSON array
 function psJson(cmd, timeout, depth) {
   const depthArg = depth ? ` -Depth ${depth}` : '';
-  const full = `powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${cmd} | ConvertTo-Json${depthArg} -Compress"`;
+  const full = `powershell -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${cmd} | ConvertTo-Json${depthArg} -Compress"`;
   const out = safeExec(full, { timeout: timeout || 8000 });
   if (!out) return null;
   try {
@@ -116,10 +133,17 @@ function psJson(cmd, timeout, depth) {
   }
 }
 
-// ── API: Get Disk Info (cross-platform) ──
+// ── API: Get Disk Info (Windows only, with caching) ──
+let _disksCache = { data: null, time: 0 };
+
 function getDisks() {
-  if (isWin) return getDisksWin();
-  return getDisksUnix();
+  const now = Date.now();
+  if (_disksCache.data && (now - _disksCache.time) < CACHE_TTL) {
+    return _disksCache.data;
+  }
+  const result = getDisksWin();
+  _disksCache = { data: result, time: now };
+  return result;
 }
 
 function getDisksWin() {
@@ -170,37 +194,11 @@ function getDisksWin() {
   return disks.length > 0 ? disks : [{ device: 'C:', mount: 'C:', total: '100.0 GB', totalBytes: 107374182400, used: '50.0 GB', usedBytes: 53687091200, avail: '50.0 GB', availBytes: 53687091200, usedPercent: 50, label: '系统盘' }];
 }
 
-function getDisksUnix() {
-  const output = safeExec('df -B1 --type=ext4 --type=ext3 --type=ext2 --type=btrfs --type=xfs --type=ntfs --type=vfat --type=fuseblk --type=apfs --type=hfs 2>/dev/null || df -B1 2>/dev/null');
-  if (!output) return fallbackDisks();
-  const lines = output.trim().split('\n').slice(1);
-  const disks = [];
-  const skipMounts = ['/dev', '/sys', '/proc', '/run', '/snap', '/boot/efi'];
-  for (const line of lines) {
-    const parts = line.trim().split(/\s+/);
-    if (parts.length < 6) continue;
-    const [device, total, used, avail, pct, mount] = parts;
-    const totalNum = parseInt(total, 10) || 0;
-    const usedNum = parseInt(used, 10) || 0;
-    const availNum = parseInt(avail, 10) || 0;
-    if (totalNum === 0 || skipMounts.some(m => mount.startsWith(m))) continue;
-    disks.push({
-      device, mount,
-      total: formatSize(totalNum), totalBytes: totalNum,
-      used: formatSize(usedNum), usedBytes: usedNum,
-      avail: formatSize(availNum), availBytes: availNum,
-      usedPercent: totalNum > 0 ? (usedNum / totalNum * 100) : 0,
-      label: mount === '/' ? '系统盘' : mount
-    });
-  }
-  return disks.length > 0 ? disks : fallbackDisks();
-}
-
 function fallbackDisks() {
   const totalMem = os.totalmem();
   const freeMem = os.freemem();
   return [{
-    device: 'system', mount: isWin ? 'C:' : '/',
+    device: 'system', mount: 'C:',
     total: formatSize(totalMem), totalBytes: totalMem,
     used: formatSize(totalMem - freeMem), usedBytes: totalMem - freeMem,
     avail: formatSize(freeMem), availBytes: freeMem,
@@ -209,17 +207,26 @@ function fallbackDisks() {
   }];
 }
 
-// ── API: Get Disk Health (cross-platform) ──
+// ── API: Get Disk Health (Windows only, with caching) ──
+let _diskHealthCache = { data: null, time: 0 };
+const CACHE_TTL = 60000; // 60秒缓存
+
 function getDiskHealth() {
-  if (isWin) return getDiskHealthWin();
-  return getDiskHealthUnix();
+  const now = Date.now();
+  if (_diskHealthCache.data && (now - _diskHealthCache.time) < CACHE_TTL) {
+    return _diskHealthCache.data;
+  }
+  const result = getDiskHealthWin();
+  _diskHealthCache = { data: result, time: now };
+  return result;
 }
 
 function getDiskHealthWin() {
   const disks = [];
   try {
-    const psCmd = `$phys = Get-PhysicalDisk | Select-Object DeviceID,FriendlyName,MediaType,Size,HealthStatus,OperationalStatus,BusType; $parts = Get-Partition | Where-Object { $_.DriveLetter } | Select-Object DiskNumber,DriveLetter; $vols = Get-Volume | Where-Object { $_.DriveLetter } | Select-Object DriveLetter,Size,SizeRemaining; @{ PhysicalDisks = $phys; Partitions = $parts; Volumes = $vols }`;
-    const data = psJson(psCmd, 8000, 3);
+    // 使用 @() 子表达式代替变量赋值，避免 $ 被 shell 吞掉
+    const psCmd = `@{ PhysicalDisks = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Select-Object DeviceID,FriendlyName,MediaType,Size,HealthStatus,OperationalStatus,BusType); Partitions = @(Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | Select-Object DiskNumber,DriveLetter); Volumes = @(Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | Select-Object DriveLetter,Size,SizeRemaining) }`;
+    const data = psJson(psCmd, 10000, 3);
 
     function toArr(v) {
       if (Array.isArray(v)) return v;
@@ -234,7 +241,7 @@ function getDiskHealthWin() {
       vols = toArr(data[0].Volumes);
     }
     if (!phys || phys.length === 0) {
-      disks.push({ name: 'disk0', type: 'SSD', model: '系统磁盘', temperature: null, status: '正常', healthScore: 85, smartAvailable: false, totalBytes: 0, availBytes: 0, total: '—', avail: '—' });
+      disks.push({ name: 'disk0', type: 'SSD', model: '系统磁盘', temperature: null, status: '正常', healthScore: 85, smartAvailable: false, totalBytes: 0, availBytes: 0, total: '—', avail: '—', driveLetters: '', powerOnDisplay: null, readDisplay: null, writeDisplay: null });
       return disks;
     }
 
@@ -257,6 +264,15 @@ function getDiskHealthWin() {
       };
     }
 
+    // 获取 S.M.A.R.T. 数据（通过 IOCTL，尝试免管理员权限读取）
+    let smartMap = {};
+    try {
+      const smartDisks = getAllDiskSmart();
+      for (const sd of smartDisks) {
+        smartMap[sd.deviceId] = sd;
+      }
+    } catch (e) {}
+
     function hashStr(s) {
       let h = 0;
       for (let i = 0; i < s.length; i++) {
@@ -277,17 +293,13 @@ function getDiskHealthWin() {
       } else {
         base = 78;
       }
-
       const usagePenalty = usagePercent > 95 ? -8 : usagePercent > 85 ? -5 : usagePercent > 70 ? -2 : 0;
       base += usagePenalty;
-
       const typeBonus = isSSD ? 1 : 0;
       base += typeBonus;
-
       const seed = hashStr(deviceId + '|' + model);
       const jitter = (seed % 7) - 3;
       base += jitter;
-
       base = Math.max(5, Math.min(99, base));
       return Math.round(base);
     }
@@ -321,92 +333,66 @@ function getDiskHealthWin() {
       const usagePercent = totalBytes > 0 ? ((totalBytes - availBytes) / totalBytes * 100) : 0;
       const healthScore = calcHealthScore(healthStatus, opStatus, isSSD, usagePercent, deviceId, model);
 
-      let smartAvailable = false;
-      let temperature = null;
-      try {
-        const tempPsCmd = `Get-PhysicalDisk -DeviceNumber ${deviceId} | Get-StorageReliabilityCounter | Select-Object Temperature | ConvertTo-Json`;
-        const tempData = psJson(tempPsCmd, 3000, 1);
-        if (tempData && tempData.Temperature) {
-          temperature = parseInt(tempData.Temperature, 10);
-          smartAvailable = true;
-        }
-      } catch(e) {}
+      // 合并 S.M.A.R.T. 数据
+      const smart = smartMap[parseInt(deviceId, 10)] || {};
+      const temperature = smart.temperature !== undefined ? smart.temperature : null;
+      const powerOnHours = smart.powerOnHours || null;
+      const totalBytesRead = smart.totalBytesRead || null;
+      const totalBytesWritten = smart.totalBytesWritten || null;
+      const smartAvailable = smart.smartAvailable || false;
 
+      // 格式化通电时间
+      let powerOnDisplay = null;
+      if (powerOnHours !== null && powerOnHours > 0) {
+        const days = Math.floor(powerOnHours / 24);
+        const hours = powerOnHours % 24;
+        powerOnDisplay = days > 0 ? `${days}天${hours}小时` : `${hours}小时`;
+      }
+
+      // 格式化总读写量
+      const readDisplay = totalBytesRead !== null ? formatSize(totalBytesRead) : null;
+      const writeDisplay = totalBytesWritten !== null ? formatSize(totalBytesWritten) : null;
+
+      // 根据温度调整健康分数
+      let finalScore = healthScore;
       if (temperature !== null) {
         const tempPenalty = temperature > 65 ? -10 : temperature > 55 ? -5 : temperature > 45 ? -2 : 0;
-        const newScore = Math.max(5, Math.min(99, healthScore + tempPenalty));
-        const finalScore = Math.round(newScore);
-        disks.push({
-          name: 'disk' + deviceId,
-          type: isSSD ? 'SSD' : 'HDD',
-          model: model,
-          temperature: temperature,
-          status: finalScore > 80 ? '健康' : finalScore > 60 ? '注意' : '警告',
-          healthScore: finalScore,
-          smartAvailable: smartAvailable,
-          totalBytes: totalBytes,
-          availBytes: availBytes,
-          total: formatSize(totalBytes),
-          avail: formatSize(availBytes),
-          driveLetters: letters.join(', ')
-        });
-      } else {
-        disks.push({
-          name: 'disk' + deviceId,
-          type: isSSD ? 'SSD' : 'HDD',
-          model: model,
-          temperature: null,
-          status: healthScore > 80 ? '健康' : healthScore > 60 ? '注意' : '警告',
-          healthScore: healthScore,
-          smartAvailable: false,
-          totalBytes: totalBytes,
-          availBytes: availBytes,
-          total: formatSize(totalBytes),
-          avail: formatSize(availBytes),
-          driveLetters: letters.join(', ')
-        });
+        finalScore = Math.max(5, Math.min(99, healthScore + tempPenalty));
       }
+      finalScore = Math.round(finalScore);
+
+      disks.push({
+        name: 'disk' + deviceId,
+        type: isSSD ? 'SSD' : 'HDD',
+        model: model,
+        temperature: temperature,
+        status: finalScore > 80 ? '健康' : finalScore > 60 ? '注意' : '警告',
+        healthScore: finalScore,
+        smartAvailable: smartAvailable,
+        totalBytes: totalBytes,
+        availBytes: availBytes,
+        total: formatSize(totalBytes),
+        avail: formatSize(availBytes),
+        driveLetters: letters.join(', '),
+        powerOnHours: powerOnHours,
+        powerOnDisplay: powerOnDisplay,
+        totalBytesRead: totalBytesRead,
+        totalBytesWritten: totalBytesWritten,
+        readDisplay: readDisplay,
+        writeDisplay: writeDisplay,
+        perfReadBytesPerSec: smart.perfReadBytesPerSec != null ? smart.perfReadBytesPerSec : null,
+        perfWriteBytesPerSec: smart.perfWriteBytesPerSec != null ? smart.perfWriteBytesPerSec : null
+      });
     }
   } catch(e) {
-    // Fallback: return default disk info on any error
     disks.length = 0;
     disks.push({
       name: 'disk0', type: 'SSD', model: '系统磁盘',
       temperature: null, status: '正常', healthScore: 85,
       smartAvailable: false, totalBytes: 0, availBytes: 0,
-      total: '—', avail: '—'
+      total: '—', avail: '—', driveLetters: '',
+      powerOnDisplay: null, readDisplay: null, writeDisplay: null
     });
-  }
-  return disks;
-}
-
-function getDiskHealthUnix() {
-  const disks = [];
-  const lsblk = safeExec('lsblk -d -o NAME,TYPE,ROTA,MODEL 2>/dev/null', { timeout: 3000 });
-  if (lsblk) {
-    const lines = lsblk.trim().split('\n').slice(1);
-    for (const line of lines) {
-      const parts = line.trim().split(/\s+/);
-      if (parts.length < 2) continue;
-      const [name, type] = parts;
-      const isRotational = parts[2] === '1';
-      const model = parts.slice(3).join(' ') || name;
-      let temp = null;
-      try {
-        const tempRaw = safeExec(`cat /sys/block/${name}/device/temperature 2>/dev/null`);
-        if (tempRaw && tempRaw.trim()) temp = parseInt(tempRaw.trim(), 10);
-      } catch(e) {}
-      disks.push({
-        name, type: isRotational ? 'HDD' : 'SSD', model,
-        temperature: temp, status: '正常',
-        healthScore: temp !== null ? (temp < 50 ? 95 : temp < 60 ? 80 : 60) : 85,
-        smartAvailable: temp !== null,
-        totalBytes: 0, availBytes: 0, total: '—', avail: '—'
-      });
-    }
-  }
-  if (disks.length === 0) {
-    disks.push({ name: 'disk0', type: 'SSD', model: '系统磁盘', temperature: null, status: '正常', healthScore: 85, smartAvailable: false, totalBytes: 0, availBytes: 0, total: '—', avail: '—' });
   }
   return disks;
 }
@@ -570,10 +556,33 @@ function analyzeFileTypes(dirPath, depth = 0, maxDepth = 3) {
   return { categories: formatted, totalSize: formatSize(totalSize) };
 }
 
-// ── API: Get system info ──
+// ── API: Get system info (with caching) ──
+let _sysInfoCache = { data: null, time: 0 };
+
 function getSystemInfo() {
-  return {
-    platform: process.platform,
+  const now = Date.now();
+  if (_sysInfoCache.data && (now - _sysInfoCache.time) < CACHE_TTL) {
+    return _sysInfoCache.data;
+  }
+  let osVersion = '';
+  
+  try {
+    const buf = execSync(`powershell -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; (Get-CimInstance Win32_OperatingSystem).Caption + ' ' + (Get-CimInstance Win32_OperatingSystem).Version"`, { timeout: 5000, encoding: 'buffer' });
+    const output = decodeOutput(buf).trim();
+    if (output) {
+      osVersion = output;
+    }
+  } catch (e) {}
+  if (!osVersion) {
+    try {
+      const buf = execSync(`powershell -NoProfile -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; (Get-WmiObject Win32_OperatingSystem).Caption"`, { timeout: 5000, encoding: 'buffer' });
+      const output = decodeOutput(buf).trim();
+      if (output) osVersion = output;
+    } catch (e) {}
+  }
+  
+  const result = {
+    platform: osVersion || 'Windows',
     hostname: os.hostname(),
     totalMemory: formatSize(os.totalmem()),
     freeMemory: formatSize(os.freemem()),
@@ -581,6 +590,8 @@ function getSystemInfo() {
     cpuModel: os.cpus()[0]?.model || 'Unknown',
     uptime: Math.floor(os.uptime() / 3600) + 'h ' + Math.floor((os.uptime() % 3600) / 60) + 'm'
   };
+  _sysInfoCache = { data: result, time: now };
+  return result;
 }
 
 module.exports = {
