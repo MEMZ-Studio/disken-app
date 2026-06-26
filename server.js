@@ -131,6 +131,28 @@ const server = http.createServer((req, res) => {
     return sendJSON(res, core.analyzeFileTypes(scanPath));
   }
 
+  if (pathname === '/api/junk-scan') {
+    return sendJSON(res, core.analyzeJunk());
+  }
+
+  if (pathname === '/api/junk-delete' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { paths } = JSON.parse(body);
+        if (!Array.isArray(paths) || paths.length === 0) {
+          return sendJSON(res, { error: '无效路径列表' }, 400);
+        }
+        const result = core.deleteJunkFiles(paths);
+        return sendJSON(res, { success: true, ...result });
+      } catch(e) {
+        return sendJSON(res, { error: e.message }, 500);
+      }
+    });
+    return;
+  }
+
   if (pathname === '/api/delete' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => body += chunk);

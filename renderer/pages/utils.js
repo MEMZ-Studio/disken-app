@@ -374,6 +374,7 @@ const Disken = {
       { id: 'index', icon: '📊', label: '概览', href: '/pages/index.html' },
       { id: 'search', icon: '🔍', label: '文件搜索', href: '/pages/search.html' },
       { id: 'visualization', icon: '📁', label: '空间可视化', href: '/pages/visualization.html' },
+      { id: 'cleaner', icon: '🧹', label: '垃圾清理', href: '/pages/cleaner.html' },
       { id: 'health', icon: '💽', label: '硬盘状态', href: '/pages/health.html' },
     ];
     return `
@@ -389,7 +390,7 @@ const Disken = {
           </a>
         `).join('')}
       </nav>
-      <div class="sidebar-footer">磁盘精灵 v1.2.0</div>
+      <div class="sidebar-footer">磁盘精灵 v1.4.0</div>
     </aside>`;
   },
 
@@ -435,7 +436,7 @@ const Disken = {
           <div class="about-logo">磁</div>
           <div class="about-title-group">
             <h2 class="about-title">磁盘精灵</h2>
-            <div class="about-subtitle">Disken v1.2.0</div>
+            <div class="about-subtitle">Disken v1.4.0</div>
           </div>
         </div>
         <div class="about-body">

@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>垃圾清理 - 磁盘精灵</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+.scan-card {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+}
+.scan-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+.scan-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+.scan-count {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.scan-progress {
+  height: 6px;
+  background: var(--bg);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+.scan-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  transition: width 0.3s ease;
+}
+.scan-stats {
+  display: flex;
+  gap: 1.5rem;
+  font-size: 0.85rem;
+}
+.scan-stat {
+  display: flex;
+  flex-direction: column;
+}
+.scan-stat-value {
+  font-weight: 600;
+  color: var(--ink);
+}
+.scan-stat-label {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.category-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.category-card {
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 1rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+}
+.category-card:hover { border-color: var(--accent); }
+.category-card.selected { border-color: var(--accent); background: rgba(59,130,246,0.08); }
+.category-card.selected::before {
+  content: '✓';
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  width: 18px;
+  height: 18px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 50%;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.category-icon { font-size: 1.5rem; margin-bottom: 0.4rem; }
+.category-name { font-size: 0.85rem; color: var(--ink); font-weight: 500; margin-bottom: 0.25rem; }
+.category-size { font-size: 0.95rem; font-weight: 600; color: var(--accent); }
+
+.item-list {
+  max-height: 400px;
+  overflow-y: auto;
+}
+.item-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--rule);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.item-row:hover { background: var(--surface); }
+.item-row.selected { background: rgba(59,130,246,0.08); }
+.item-icon { font-size: 1rem; width: 20px; text-align: center; }
+.item-info { flex: 1; min-width: 0; }
+.item-name { color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item-path { color: var(--muted); font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item-size { color: var(--muted); font-size: 0.8rem; }
+.item-check { width: 18px; height: 18px; border: 2px solid var(--rule); border-radius: 4px; flex-shrink: 0; }
+.item-row.selected .item-check { background: var(--accent); border-color: var(--accent); }
+.item-row.selected .item-check::after { content: '✓'; color: #fff; font-size: 11px; display: flex; align-items: center; justify-content: center; height: 100%; }
+
+.clean-btn {
+  padding: 0.65rem 1.5rem;
+  font-size: 0.9rem;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+  border: none;
+  font-weight: 500;
+}
+.clean-btn.primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: #fff;
+}
+.clean-btn.primary:hover { opacity: 0.9; }
+.clean-btn.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.clean-btn.secondary {
+  background: var(--bg2);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+}
+.clean-btn.secondary:hover { border-color: var(--accent); }
+
+.summary-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.8rem 1rem;
+  background: var(--bg2);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  margin-top: 1rem;
+}
+.summary-info { font-size: 0.85rem; }
+.summary-count { color: var(--accent); font-weight: 600; }
+.summary-size { color: var(--accent2); font-weight: 600; }
+
+.toast {
+  position: fixed;
+  bottom: 2rem; left: 50%;
+  transform: translateX(-50%) translateY(100px);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 0.8rem 1.5rem;
+  font-size: 0.9rem;
+  z-index: 2000;
+  transition: transform 0.3s ease;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+}
+.toast.show { transform: translateX(-50%) translateY(0); }
+.toast.success { border-color: var(--accent2); color: var(--accent2); }
+.toast.error { border-color: var(--danger); color: var(--danger); }
+
+.loading { text-align: center; padding: 3rem; color: var(--muted); }
+.spinner {
+  width: 32px; height: 32px;
+  border: 3px solid var(--rule);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin: 0 auto 0.5rem;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<script src="utils.js"></script>
+<script>
+(function() {
+  const content = Disken.initPage('cleaner', '🧹 垃圾清理');
+
+  let junkData = null;
+  let selectedCategories = new Set();
+  let selectedItems = new Set();
+  let isScanning = false;
+
+  const iconMap = {
+    temp: '🗑️', recycle: '🗑️', download: '📥', cache: '💾',
+    thumbnail: '🖼️', npm: '📦', windows: '⚙️'
+  };
+
+  function renderEmpty() {
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><div class="loading-text">点击下方按钮开始扫描垃圾文件</div></div>' +
+      '<div style="display:flex;justify-content:center;margin-top:1rem">' +
+        '<button class="clean-btn primary" onclick="startScan()">🚀 开始扫描</button>' +
+      '</div>' +
+      '<div class="toast" id="toast"></div>';
+  }
+
+  function renderResults(data) {
+    const totalSize = Disken.formatSize(data.totalSize);
+    const categoryHtml = data.categoryStats.map(cat => {
+      const isSelected = selectedCategories.has(cat.category);
+      return '<div class="category-card' + (isSelected ? ' selected' : '') + '" data-category="' + cat.category + '">' +
+        '<div class="category-icon">' + (iconMap[cat.category] || '📁') + '</div>' +
+        '<div class="category-name">' + cat.label + '</div>' +
+        '<div class="category-size">' + cat.sizeFormatted + '</div>' +
+      '</div>';
+    }).join('');
+
+    let groupsHtml = '';
+    for (const group of data.groups) {
+      const itemsHtml = group.items.map(item => {
+        const isSelected = selectedItems.has(item.path);
+        return '<div class="item-row' + (isSelected ? ' selected' : '') + '" data-path="' + item.path + '">' +
+          '<div class="item-icon">' + (item.type === 'directory' ? '📁' : '📄') + '</div>' +
+          '<div class="item-info">' +
+            '<div class="item-name">' + item.name + '</div>' +
+            '<div class="item-path">' + item.path + '</div>' +
+          '</div>' +
+          '<div class="item-size">' + Disken.formatSize(item.size) + '</div>' +
+          '<div class="item-check"></div>' +
+        '</div>';
+      }).join('');
+
+      groupsHtml += '<div class="scan-card">' +
+        '<div class="scan-header">' +
+          '<span class="scan-title">' + group.label + '</span>' +
+          '<span class="scan-count">' + group.itemCount + ' 个文件</span>' +
+        '</div>' +
+        '<div class="scan-progress">' +
+          '<div class="scan-bar" style="width:100%"></div>' +
+        '</div>' +
+        '<div class="scan-stats">' +
+          '<div class="scan-stat">' +
+            '<span class="scan-stat-value">' + Disken.formatSize(group.totalSize) + '</span>' +
+            '<span class="scan-stat-label">总大小</span>' +
+          '</div>' +
+        '</div>' +
+        '<div class="item-list">' + itemsHtml + '</div>' +
+      '</div>';
+    }
+
+    content.innerHTML = '<div class="category-grid">' + categoryHtml + '</div>' +
+      groupsHtml +
+      '<div class="summary-bar">' +
+        '<div class="summary-info">已选择 <span class="summary-count" id="selectedCount">0</span> 个文件，共 <span class="summary-size" id="selectedSize">0 B</span></div>' +
+        '<div style="display:flex;gap:0.5rem">' +
+          '<button class="clean-btn secondary" onclick="selectAll()">全选</button>' +
+          '<button class="clean-btn secondary" onclick="deselectAll()">取消全选</button>' +
+          '<button class="clean-btn primary" onclick="cleanSelected()" id="btnClean">清理选中</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="toast" id="toast"></div>';
+
+    document.querySelectorAll('.category-card').forEach(card => {
+      card.addEventListener('click', () => toggleCategory(card.dataset.category));
+    });
+
+    document.querySelectorAll('.item-row').forEach(row => {
+      row.addEventListener('click', () => toggleItem(row.dataset.path));
+    });
+
+    updateSummary();
+  }
+
+  function toggleCategory(category) {
+    if (selectedCategories.has(category)) {
+      selectedCategories.delete(category);
+    } else {
+      selectedCategories.add(category);
+    }
+    for (const group of junkData.groups) {
+      for (const item of group.items) {
+        if (item.category === category) {
+          if (selectedCategories.has(category)) {
+            selectedItems.add(item.path);
+          } else {
+            selectedItems.delete(item.path);
+          }
+        }
+      }
+    }
+    renderResults(junkData);
+  }
+
+  function toggleItem(path) {
+    if (selectedItems.has(path)) {
+      selectedItems.delete(path);
+    } else {
+      selectedItems.add(path);
+    }
+    updateSummary();
+    const row = document.querySelector('.item-row[data-path="' + path + '"]');
+    if (row) row.classList.toggle('selected');
+  }
+
+  function selectAll() {
+    selectedItems.clear();
+    for (const group of junkData.groups) {
+      for (const item of group.items) {
+        selectedItems.add(item.path);
+      }
+    }
+    renderResults(junkData);
+  }
+
+  function deselectAll() {
+    selectedItems.clear();
+    selectedCategories.clear();
+    renderResults(junkData);
+  }
+
+  function updateSummary() {
+    const count = selectedItems.size;
+    let size = 0;
+    for (const group of junkData.groups) {
+      for (const item of group.items) {
+        if (selectedItems.has(item.path)) {
+          size += item.size;
+        }
+      }
+    }
+    document.getElementById('selectedCount').textContent = count;
+    document.getElementById('selectedSize').textContent = Disken.formatSize(size);
+    document.getElementById('btnClean').disabled = count === 0;
+  }
+
+  function showToast(msg, type) {
+    const toast = document.getElementById('toast');
+    toast.textContent = msg;
+    toast.className = 'toast ' + type;
+    requestAnimationFrame(() => toast.classList.add('show'));
+    setTimeout(() => toast.classList.remove('show'), 2500);
+  }
+
+  async function startScan() {
+    if (isScanning) return;
+    isScanning = true;
+    content.innerHTML = '<div class="loading"><div class="spinner"></div><div class="loading-text">正在扫描系统垃圾文件...</div></div>' +
+      '<div class="toast" id="toast"></div>';
+
+    try {
+      const data = await Disken.api('/api/junk-scan');
+      if (!data) {
+        showToast('扫描失败', 'error');
+        renderEmpty();
+        return;
+      }
+      junkData = data;
+      selectedCategories.clear();
+      selectedItems.clear();
+      renderResults(data);
+    } catch(e) {
+      console.error('Scan error:', e);
+      showToast('扫描失败: ' + e.message, 'error');
+      renderEmpty();
+    } finally {
+      isScanning = false;
+    }
+  }
+
+  async function cleanSelected() {
+    const paths = Array.from(selectedItems);
+    if (paths.length === 0) return;
+
+    Disken.showConfirm('确定要清理选中的 ' + paths.length + ' 个文件吗？此操作不可恢复。', async () => {
+      try {
+        const res = await fetch('/api/junk-delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paths: paths })
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('清理完成: 成功 ' + data.success + ' 个，失败 ' + data.failed + ' 个', 'success');
+          startScan();
+        } else {
+          showToast('清理失败: ' + (data.error || '未知错误'), 'error');
+        }
+      } catch(e) {
+        showToast('清理失败: ' + e.message, 'error');
+      }
+    });
+  }
+
+  window.startScan = startScan;
+  window.cleanSelected = cleanSelected;
+  window.selectAll = selectAll;
+  window.deselectAll = deselectAll;
+
+  renderEmpty();
+})();
+</script>
+</body>
+</html>

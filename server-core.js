@@ -515,25 +515,29 @@ function getDirSize(dirPath, depth = 0, maxDepth = 2) {
   return total;
 }
 
-// ── API: Analyze file types ──
-function analyzeFileTypes(dirPath, depth = 0, maxDepth = 3) {
+function _analyzeFileTypesRaw(dirPath, depth = 0, maxDepth = 3) {
   const types = {};
   try {
     const entries = fs.readdirSync(dirPath, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.name.startsWith('.')) continue;
+      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
       const fullPath = path.join(dirPath, entry.name);
       try {
         if (entry.isFile()) {
           const ext = path.extname(entry.name).toLowerCase() || '(无扩展名)';
           types[ext] = (types[ext] || 0) + fs.statSync(fullPath).size;
         } else if (entry.isDirectory() && depth < maxDepth) {
-          const subTypes = analyzeFileTypes(fullPath, depth + 1, maxDepth);
+          const subTypes = _analyzeFileTypesRaw(fullPath, depth + 1, maxDepth);
           for (const [k, v] of Object.entries(subTypes)) types[k] = (types[k] || 0) + v;
         }
       } catch(e) {}
     }
   } catch(e) {}
+  return types;
+}
+
+function analyzeFileTypes(dirPath, maxDepth = 3) {
+  const types = _analyzeFileTypesRaw(dirPath, 0, maxDepth);
   const categoryMap = {
     '.jpg':'图片','.jpeg':'图片','.png':'图片','.gif':'图片','.bmp':'图片','.webp':'图片','.svg':'图片','.ico':'图片',
     '.mp4':'视频','.avi':'视频','.mkv':'视频','.mov':'视频','.wmv':'视频','.flv':'视频','.webm':'视频',
@@ -594,9 +598,158 @@ function getSystemInfo() {
   return result;
 }
 
+// ── API: Junk File Cleaner ──
+const JUNK_PATTERNS = {
+  temp: { label: '临时文件', patterns: ['.tmp', '.temp', '.bak', '.old', '.log', '.cache'], dirs: ['Temp', 'tmp'] },
+  recycle: { label: '回收站', dirs: ['$Recycle.Bin', 'Recycler'] },
+  download: { label: '下载目录', patterns: [], dirs: ['Downloads'] },
+  cache: { label: '浏览器缓存', dirs: ['Cache', 'CacheStorage', 'Code Cache', 'Service Worker'] },
+  thumbnail: { label: '缩略图缓存', patterns: ['Thumbs.db'], dirs: ['Thumbnails'] },
+  npm: { label: 'npm 缓存', patterns: [], dirs: ['node_modules'] },
+  windows: { label: 'Windows 更新缓存', dirs: ['SoftwareDistribution', 'Catroot2'] },
+};
+
+const JUNK_DIRS = [
+  { path: () => process.env.TEMP, label: '系统临时目录', category: 'temp' },
+  { path: () => process.env.TMP, label: '系统临时目录', category: 'temp' },
+  { path: () => path.join(os.homedir(), 'AppData', 'Local', 'Temp'), label: '用户临时目录', category: 'temp' },
+  { path: () => path.join(os.homedir(), 'AppData', 'Local', 'Microsoft', 'Windows', 'INetCache'), label: 'IE缓存', category: 'cache' },
+  { path: () => path.join(os.homedir(), 'AppData', 'Local', 'Google', 'Chrome', 'User Data', 'Default', 'Cache'), label: 'Chrome缓存', category: 'cache' },
+  { path: () => path.join(os.homedir(), 'AppData', 'Local', 'Mozilla', 'Firefox', 'Profiles'), label: 'Firefox配置', category: 'cache' },
+  { path: () => path.join(os.homedir(), 'AppData', 'Local', 'Thumbnails'), label: '缩略图缓存', category: 'thumbnail' },
+  { path: () => path.join(os.homedir(), 'Downloads'), label: '下载目录', category: 'download' },
+  { path: () => path.join(os.homedir(), '.npm'), label: 'npm缓存', category: 'npm' },
+];
+
+function scanJunkFiles(dirPath, depth = 0, maxDepth = 3) {
+  const junkItems = [];
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') && entry.name !== '.npm') continue;
+      const fullPath = path.join(dirPath, entry.name);
+      try {
+        const stat = fs.statSync(fullPath);
+        if (entry.isFile()) {
+          const ext = path.extname(entry.name).toLowerCase();
+          const fileName = entry.name.toLowerCase();
+          let matchedCategory = null;
+          for (const [cat, config] of Object.entries(JUNK_PATTERNS)) {
+            if (config.patterns.includes(ext) || config.patterns.includes(fileName)) {
+              matchedCategory = cat;
+              break;
+            }
+          }
+          if (matchedCategory) {
+            junkItems.push({
+              path: fullPath,
+              name: entry.name,
+              size: stat.size,
+              category: matchedCategory,
+              categoryLabel: JUNK_PATTERNS[matchedCategory].label,
+              type: 'file',
+              modified: stat.mtime.toISOString().slice(0, 19).replace('T', ' ')
+            });
+          }
+        } else if (entry.isDirectory() && depth < maxDepth) {
+          const dirName = entry.name.toLowerCase();
+          let matchedCategory = null;
+          for (const [cat, config] of Object.entries(JUNK_PATTERNS)) {
+            if (config.dirs.some(d => dirName.includes(d.toLowerCase()) || d.toLowerCase().includes(dirName))) {
+              matchedCategory = cat;
+              break;
+            }
+          }
+          if (matchedCategory) {
+            junkItems.push({
+              path: fullPath,
+              name: entry.name,
+              size: stat.size,
+              category: matchedCategory,
+              categoryLabel: JUNK_PATTERNS[matchedCategory].label,
+              type: 'directory',
+              modified: stat.mtime.toISOString().slice(0, 19).replace('T', ' ')
+            });
+          }
+          const subItems = scanJunkFiles(fullPath, depth + 1, maxDepth);
+          junkItems.push(...subItems);
+        }
+      } catch(e) {}
+    }
+  } catch(e) {}
+  return junkItems;
+}
+
+function analyzeJunk() {
+  const results = [];
+  for (const def of JUNK_DIRS) {
+    try {
+      const dirPath = typeof def.path === 'function' ? def.path() : def.path;
+      if (!dirPath || !fs.existsSync(dirPath)) continue;
+      if (!fs.statSync(dirPath).isDirectory()) continue;
+      const items = scanJunkFiles(dirPath, 0, 2);
+      if (items.length > 0) {
+        const totalSize = items.reduce((sum, item) => sum + item.size, 0);
+        results.push({
+          label: def.label,
+          path: dirPath,
+          category: def.category,
+          categoryLabel: JUNK_PATTERNS[def.category]?.label || def.category,
+          items: items,
+          totalSize: totalSize,
+          itemCount: items.length
+        });
+      }
+    } catch(e) {}
+  }
+  const allItems = results.flatMap(r => r.items);
+  const categoryStats = {};
+  for (const item of allItems) {
+    categoryStats[item.category] = (categoryStats[item.category] || 0) + item.size;
+  }
+  const formattedStats = Object.entries(categoryStats)
+    .map(([cat, size]) => ({ category: cat, label: JUNK_PATTERNS[cat]?.label || cat, size, sizeFormatted: formatSize(size) }))
+    .sort((a, b) => b.size - a.size);
+  return {
+    groups: results,
+    allItems: allItems,
+    totalSize: allItems.reduce((sum, item) => sum + item.size, 0),
+    totalSizeFormatted: formatSize(allItems.reduce((sum, item) => sum + item.size, 0)),
+    totalCount: allItems.length,
+    categoryStats: formattedStats
+  };
+}
+
+function deleteJunkFiles(paths) {
+  let success = 0;
+  let failed = 0;
+  const errors = [];
+  for (const p of paths) {
+    try {
+      const resolved = resolvePath(p);
+      if (!resolved || !fs.existsSync(resolved)) {
+        failed++;
+        errors.push({ path: p, error: '文件不存在' });
+        continue;
+      }
+      if (fs.statSync(resolved).isDirectory()) {
+        fs.rmSync(resolved, { recursive: true, force: true });
+      } else {
+        fs.unlinkSync(resolved);
+      }
+      success++;
+    } catch(e) {
+      failed++;
+      errors.push({ path: p, error: e.message });
+    }
+  }
+  return { success, failed, errors };
+}
+
 module.exports = {
   getDisks, getDiskHealth, scanDirectory, searchFiles, analyzeFileTypes,
   listDirectory, getSystemInfo,
+  analyzeJunk, deleteJunkFiles,
   resolvePath, isValidDir, formatSize,
   // Async worker-based versions (non-blocking)
   scanDirectoryAsync: (dirPath, maxDepth = 3) => runWorker('scan', dirPath, { maxDepth }).then(r => r.tree),
