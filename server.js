@@ -131,6 +131,22 @@ const server = http.createServer((req, res) => {
     return sendJSON(res, core.analyzeFileTypes(scanPath));
   }
 
+  if (pathname === '/api/junk-scan-stream') {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*'
+    });
+    res.flushHeaders();
+    core.analyzeJunkStream((event) => {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    });
+    res.end();
+    req.on('close', () => {});
+    return;
+  }
+
   if (pathname === '/api/junk-scan') {
     return sendJSON(res, core.analyzeJunk());
   }

@@ -74,7 +74,7 @@ function startServer() {
   }
 
   // Import server logic
-  const { getDisks, getDiskHealth, scanDirectory, searchFiles, analyzeFileTypes, listDirectory, getSystemInfo, resolvePath, isValidDir, formatSize, scanDirectoryAsync, analyzeFileTypesAsync, searchFilesAsync } = require('./server-core');
+  const { getDisks, getDiskHealth, scanDirectory, searchFiles, analyzeFileTypes, listDirectory, getSystemInfo, resolvePath, isValidDir, formatSize, scanDirectoryAsync, analyzeFileTypesAsync, searchFilesAsync, analyzeJunk, analyzeJunkStream, deleteJunkFiles } = require('./server-core');
   const { getIndex, getAllStatus } = require('./file-index');
 
   // 自动加载已有缓存（启动时预加载，延迟执行避免阻塞服务器启动）
@@ -232,6 +232,40 @@ function startServer() {
           }
         }
       })();
+      return;
+    }
+    if (pathname === '/api/junk-scan-stream') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*'
+      });
+      res.flushHeaders();
+      analyzeJunkStream((event) => {
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+      });
+      res.end();
+      return;
+    }
+    if (pathname === '/api/junk-scan') {
+      return sendJSON(res, analyzeJunk());
+    }
+    if (pathname === '/api/junk-delete' && req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => body += chunk);
+      req.on('end', () => {
+        try {
+          const { paths } = JSON.parse(body);
+          if (!Array.isArray(paths) || paths.length === 0) {
+            return sendJSON(res, { error: '无效路径列表' }, 400);
+          }
+          const result = deleteJunkFiles(paths);
+          return sendJSON(res, { success: true, ...result });
+        } catch(e) {
+          return sendJSON(res, { error: e.message }, 500);
+        }
+      });
       return;
     }
     if (pathname === '/api/delete' && req.method === 'POST') {

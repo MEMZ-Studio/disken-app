@@ -746,10 +746,77 @@ function deleteJunkFiles(paths) {
   return { success, failed, errors };
 }
 
+function analyzeJunkStream(onProgress) {
+  const allItems = [];
+  const allGroups = [];
+  let totalScanned = 0;
+
+  for (let i = 0; i < JUNK_DIRS.length; i++) {
+    const def = JUNK_DIRS[i];
+    try {
+      const dirPath = typeof def.path === 'function' ? def.path() : def.path;
+      if (!dirPath || !fs.existsSync(dirPath)) {
+        if (onProgress) onProgress({ phase: 'skip', currentDir: def.label, dirIndex: i, totalDirs: JUNK_DIRS.length });
+        continue;
+      }
+      if (!fs.statSync(dirPath).isDirectory()) {
+        if (onProgress) onProgress({ phase: 'skip', currentDir: def.label, dirIndex: i, totalDirs: JUNK_DIRS.length });
+        continue;
+      }
+
+      if (onProgress) onProgress({ phase: 'scanning', currentDir: def.label, dirIndex: i, totalDirs: JUNK_DIRS.length, foundCount: allItems.length });
+
+      const items = scanJunkFiles(dirPath, 0, 2);
+      totalScanned += items.length;
+
+      if (items.length > 0) {
+        const totalSize = items.reduce((sum, item) => sum + item.size, 0);
+        allItems.push(...items);
+        allGroups.push({
+          label: def.label,
+          path: dirPath,
+          category: def.category,
+          categoryLabel: JUNK_PATTERNS[def.category]?.label || def.category,
+          items: items,
+          totalSize: totalSize,
+          itemCount: items.length
+        });
+      }
+
+      if (onProgress) onProgress({ phase: 'scanned', currentDir: def.label, dirIndex: i, totalDirs: JUNK_DIRS.length, foundCount: allItems.length, dirItems: items.length });
+    } catch(e) {
+      if (onProgress) onProgress({ phase: 'error', currentDir: def.label, dirIndex: i, totalDirs: JUNK_DIRS.length, error: e.message });
+    }
+  }
+
+  if (onProgress) onProgress({ phase: 'analyzing', foundCount: allItems.length });
+
+  const categoryStats = {};
+  for (const item of allItems) {
+    categoryStats[item.category] = (categoryStats[item.category] || 0) + item.size;
+  }
+  const formattedStats = Object.entries(categoryStats)
+    .map(([cat, size]) => ({ category: cat, label: JUNK_PATTERNS[cat]?.label || cat, size, sizeFormatted: formatSize(size) }))
+    .sort((a, b) => b.size - a.size);
+
+  const result = {
+    groups: allGroups,
+    allItems: allItems,
+    totalSize: allItems.reduce((sum, item) => sum + item.size, 0),
+    totalSizeFormatted: formatSize(allItems.reduce((sum, item) => sum + item.size, 0)),
+    totalCount: allItems.length,
+    categoryStats: formattedStats
+  };
+
+  if (onProgress) onProgress({ phase: 'done', ...result });
+
+  return result;
+}
+
 module.exports = {
   getDisks, getDiskHealth, scanDirectory, searchFiles, analyzeFileTypes,
   listDirectory, getSystemInfo,
-  analyzeJunk, deleteJunkFiles,
+  analyzeJunk, analyzeJunkStream, deleteJunkFiles,
   resolvePath, isValidDir, formatSize,
   // Async worker-based versions (non-blocking)
   scanDirectoryAsync: (dirPath, maxDepth = 3) => runWorker('scan', dirPath, { maxDepth }).then(r => r.tree),
