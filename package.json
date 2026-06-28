@@ -1,6 +1,6 @@
 {
   "name": "disken",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Disken - 简约高效的硬盘管理工具",
   "main": "main.js",
   "scripts": {
@@ -29,6 +29,7 @@
       "disk-smart.js",
       "file-index.js",
       "scan-worker.js",
+      "smart-worker.js",
       "renderer/**/*",
       "assets/**/*",
       "_shared/**/*"
@@ -49,6 +50,10 @@
       {
         "from": "scan-worker.js",
         "to": "scan-worker.js"
+      },
+      {
+        "from": "smart-worker.js",
+        "to": "smart-worker.js"
       }
     ],
     "win": {

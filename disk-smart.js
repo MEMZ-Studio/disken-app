@@ -3,7 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-let scriptCache = {};
+let combinedScriptPath = null;
 
 function decodeOutput(buf) {
   if (typeof buf === 'string') return buf;
@@ -15,174 +15,11 @@ function decodeOutput(buf) {
   return str;
 }
 
-function safeExec(cmd, timeout) {
-  try {
-    const buf = execSync(cmd, { encoding: 'buffer', timeout: timeout || 15000, maxBuffer: 10 * 1024 * 1024 });
-    return decodeOutput(buf);
-  } catch(e) {
-    return null;
-  }
-}
-
-function runPsScript(scriptName, psContent, timeout) {
-  try {
-    const scriptPath = path.join(os.tmpdir(), `disken-${scriptName}.ps1`);
-    fs.writeFileSync(scriptPath, '\uFEFF' + psContent, 'utf8');
-    scriptCache[scriptName] = scriptPath;
-  } catch(e) {
-    return null;
-  }
-  const p = scriptCache[scriptName];
-  const out = safeExec(`powershell -NoProfile -ExecutionPolicy Bypass -File "${p}"`, timeout || 20000);
-  if (!out) return null;
-  const trimmed = out.trim();
-  if (!trimmed) return null;
-  try {
-    const parsed = JSON.parse(trimmed);
-    return parsed;
-  } catch(e) {
-    return null;
-  }
-}
-
-function getPhysicalDisks() {
-  const ps = `
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
-  [PSCustomObject]@{
-    DeviceID = [string]$_.DeviceID
-    FriendlyName = $_.FriendlyName
-    MediaType = $_.MediaType
-    Size = [int64]$_.Size
-    HealthStatus = $_.HealthStatus
-    OperationalStatus = $_.OperationalStatus
-    BusType = $_.BusType
-  }
-} | ConvertTo-Json -Compress
-`;
-  const r = runPsScript('physical-disks', ps, 10000);
-  if (!r) return [];
-  return Array.isArray(r) ? r : [r];
-}
-
-function getReliabilityData() {
-  const ps = `
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$results = @()
-Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
-  $pd = $_
-  $temp = $null
-  $poh = $null
-  $tempMax = $null
-  $wear = $null
-  try {
-    $rc = $pd | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue
-    if ($rc) {
-      if ($rc.Temperature -ne $null -and [double]$rc.Temperature -gt 0 -and [double]$rc.Temperature -lt 200) {
-        $temp = [int][double]$rc.Temperature
-      }
-      if ($rc.TemperatureMax -ne $null -and [double]$rc.TemperatureMax -gt 0 -and [double]$rc.TemperatureMax -lt 200) {
-        $tempMax = [int][double]$rc.TemperatureMax
-      }
-      if ($rc.PowerOnHours -ne $null -and [int64]$rc.PowerOnHours -gt 0 -and [int64]$rc.PowerOnHours -lt 5000000) {
-        $poh = [int64]$rc.PowerOnHours
-      }
-      if ($rc.Wear -ne $null -and [double]$rc.Wear -ge 0 -and [double]$rc.Wear -le 100) {
-        $wear = [int][double]$rc.Wear
-      }
-    }
-  } catch {}
-  $results += [PSCustomObject]@{
-    deviceId = [string]$pd.DeviceID
-    temperature = $temp
-    powerOnHours = $poh
-    temperatureMax = $tempMax
-    wear = $wear
-  }
-}
-$results | ConvertTo-Json -Compress
-`;
-  const r = runPsScript('reliability', ps, 25000);
-  if (!r) return {};
-  const items = Array.isArray(r) ? r : [r];
-  const map = {};
-  for (const item of items) {
-    map[String(item.deviceId)] = item;
-  }
-  return map;
-}
-
-function getDiskExtents() {
-  const ps = `
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$results = @()
-Get-Partition -ErrorAction SilentlyContinue | ForEach-Object {
-  $p = $_
-  $dl = $p | Get-Disk -ErrorAction SilentlyContinue
-  if ($dl) {
-    $vol = $p | Get-Volume -ErrorAction SilentlyContinue
-    $results += [PSCustomObject]@{
-      DiskNumber = [int]$dl.Number
-      DriveLetter = if ($vol -and $vol.DriveLetter) { [string]$vol.DriveLetter } else { $null }
-      Size = [int64]($p.Size)
-    }
-  }
-}
-$results | ConvertTo-Json -Compress
-`;
-  const r = runPsScript('extents', ps, 20000);
-  const map = {};
-  if (r) {
-    const items = Array.isArray(r) ? r : [r];
-    for (const item of items) {
-      const dn = String(item.DiskNumber);
-      if (item.DriveLetter) {
-        if (!map[dn]) map[dn] = [];
-        map[dn].push({ DriveLetter: String(item.DriveLetter), Size: Number(item.Size) || 0 });
-      }
-    }
-    for (const k in map) {
-      map[k].sort((a, b) => b.Size - a.Size);
-    }
-  }
-  return map;
-}
-
-function getPerfCounters() {
-  const ps = `
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Get-CimInstance Win32_PerfFormattedData_Counters_PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
-  $n = $_.Name
-  $id = $null
-  if ($n -match '^PhysicalDisk (\\d+)' -or $n -match '(\\d+):') {
-    $id = $matches[1]
-  }
-  if ($id) {
-    [PSCustomObject]@{
-      deviceId = $id
-      readPerSec = [int64]($_.DiskReadBytesPerSecond)
-      writePerSec = [int64]($_.DiskWriteBytesPerSecond)
-    }
-  }
-} | ConvertTo-Json -Compress
-`;
-  const r = runPsScript('perfcounters', ps, 15000);
-  const map = {};
-  if (r) {
-    const items = Array.isArray(r) ? r : [r];
-    for (const item of items) {
-      map[String(item.deviceId)] = {
-        readPerSec: Number(item.readPerSec) || 0,
-        writePerSec: Number(item.writePerSec) || 0
-      };
-    }
-  }
-  return map;
-}
-
-function getNvmeSmartData() {
-  const ps = `
+function buildCombinedScript() {
+  return `
 $ErrorActionPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -193,8 +30,6 @@ public class NvmeSmartResult {
     public long dataUnitsRead;
     public long dataUnitsWritten;
     public long powerOnHours;
-    public string reason;
-    public int lastError;
 }
 public class NvmeSmartReader {
     [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
@@ -224,9 +59,8 @@ public class NvmeSmartReader {
         NvmeSmartResult result = new NvmeSmartResult();
         result.ok = false;
         result.temp = -1;
-        result.reason = "";
         IntPtr h = OpenDisk(diskId);
-        if (h == IntPtr.Zero) { result.reason = "cannot open"; return result; }
+        if (h == IntPtr.Zero) return result;
         try {
             int inSize = 64;
             int outSize = 4096;
@@ -250,8 +84,6 @@ public class NvmeSmartReader {
 
             uint ret = 0;
             bool ok = DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, inBuf, (uint)inSize, outBuf, (uint)outSize, out ret, IntPtr.Zero);
-            int err = Marshal.GetLastWin32Error();
-            result.lastError = err;
 
             if (ok && ret > 48) {
                 int dataOff = 8 + 40;
@@ -279,20 +111,15 @@ public class NvmeSmartReader {
                     result.dataUnitsRead = (long)dur;
                     result.dataUnitsWritten = (long)duw;
                     result.powerOnHours = (long)poh;
-                } else {
-                    result.reason = "invalid data";
                 }
-            } else {
-                result.reason = "ioctl failed";
             }
             Marshal.FreeHGlobal(inBuf);
             Marshal.FreeHGlobal(outBuf);
             return result;
-        } catch (Exception ex) { result.reason = ex.Message; return result; } finally { CloseHandle(h); }
+        } catch (Exception) { return result; } finally { CloseHandle(h); }
     }
 
     public static NvmeSmartResult Read(int diskId) {
-        // 优先尝试NSID=0（兼容性最好），然后NSID=1，最后广播
         int[] nsids = { 0, 1, unchecked((int)0xFFFFFFFF) };
         foreach (int nsid in nsids) {
             NvmeSmartResult r = ReadNsid(diskId, nsid);
@@ -302,61 +129,218 @@ public class NvmeSmartReader {
     }
 }
 '@
-$results = @()
-Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.BusType -eq 'NVMe' } | ForEach-Object {
-    $devId = [int]$_.DeviceID
-    $nv = [NvmeSmartReader]::Read($devId)
-    $results += [PSCustomObject]@{
-        deviceId = [string]$devId
-        nvmeResult = $nv
-    }
-}
-$results | ConvertTo-Json -Compress -Depth 3
-`;
-  const r = runPsScript('nvme-smart', ps, 30000);
-  const map = {};
-  if (r) {
-    const items = Array.isArray(r) ? r : [r];
-    for (const item of items) {
-      const nv = item.nvmeResult;
-      if (nv && nv.ok) {
-        const dur = Number(nv.dataUnitsRead) || 0;
-        const duw = Number(nv.dataUnitsWritten) || 0;
-        const temp = Number(nv.temp) || -1;
-        const poh = Number(nv.powerOnHours) || 0;
-        map[String(item.deviceId)] = {
-          temperature: temp > 0 && temp < 150 ? temp : null,
-          powerOnHours: poh > 0 && poh < 20000000 ? poh : null,
-          percentUsed: nv.percentUsed >= 0 && nv.percentUsed <= 100 ? Number(nv.percentUsed) : null,
-          totalBytesRead: dur > 0 ? dur * 512000 : null,
-          totalBytesWritten: duw > 0 ? duw * 512000 : null
-        };
-      }
+
+$disks = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
+  [PSCustomObject]@{
+    DeviceID = [string]$_.DeviceID
+    FriendlyName = $_.FriendlyName
+    MediaType = $_.MediaType
+    Size = [int64]$_.Size
+    HealthStatus = $_.HealthStatus
+    OperationalStatus = $_.OperationalStatus
+    BusType = $_.BusType
+  }
+})
+
+$extents = @(Get-Partition -ErrorAction SilentlyContinue | ForEach-Object {
+  $p = $_
+  $dl = $p | Get-Disk -ErrorAction SilentlyContinue
+  if ($dl) {
+    $vol = $p | Get-Volume -ErrorAction SilentlyContinue
+    [PSCustomObject]@{
+      DiskNumber = [int]$dl.Number
+      DriveLetter = if ($vol -and $vol.DriveLetter) { [string]$vol.DriveLetter } else { $null }
+      Size = [int64]($p.Size)
+      VolumeSize = if ($vol) { [int64]($vol.Size) } else { 0 }
+      VolumeFree = if ($vol) { [int64]($vol.SizeRemaining) } else { 0 }
+      VolumeLabel = if ($vol) { $vol.FileSystemLabel } else { $null }
     }
   }
-  return map;
+})
+
+$reliability = @()
+foreach ($pd in (Get-PhysicalDisk -ErrorAction SilentlyContinue)) {
+  $temp = $null; $poh = $null; $wear = $null
+  try {
+    $rc = $pd | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue
+    if ($rc) {
+      if ($rc.Temperature -ne $null -and [double]$rc.Temperature -gt 0 -and [double]$rc.Temperature -lt 200) {
+        $temp = [int][double]$rc.Temperature
+      }
+      if ($rc.PowerOnHours -ne $null -and [int64]$rc.PowerOnHours -gt 0 -and [int64]$rc.PowerOnHours -lt 5000000) {
+        $poh = [int64]$rc.PowerOnHours
+      }
+      if ($rc.Wear -ne $null -and [double]$rc.Wear -ge 0 -and [double]$rc.Wear -le 100) {
+        $wear = [int][double]$rc.Wear
+      }
+    }
+  } catch {}
+  $reliability += [PSCustomObject]@{
+    deviceId = [string]$pd.DeviceID
+    temperature = $temp
+    powerOnHours = $poh
+    wear = $wear
+  }
+}
+
+$nvmeSmart = @()
+foreach ($pd in (Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.BusType -eq 'NVMe' })) {
+  $devId = [int]$pd.DeviceID
+  $nv = [NvmeSmartReader]::Read($devId)
+  $nvmeSmart += [PSCustomObject]@{
+    deviceId = [string]$devId
+    nvOk = $nv.ok
+    nvTemp = $nv.temp
+    nvPercentUsed = $nv.percentUsed
+    nvDur = $nv.dataUnitsRead
+    nvDuw = $nv.dataUnitsWritten
+    nvPoh = $nv.powerOnHours
+  }
+}
+
+$perfcounters = @()
+Get-CimInstance Win32_PerfFormattedData_Counters_PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
+  $n = $_.Name
+  $id = $null
+  if ($n -match '^PhysicalDisk (\\d+)' -or $n -match '(\\d+):') {
+    $id = $matches[1]
+  }
+  if ($id) {
+    $perfcounters += [PSCustomObject]@{
+      deviceId = $id
+      readPerSec = [int64]($_.DiskReadBytesPerSecond)
+      writePerSec = [int64]($_.DiskWriteBytesPerSecond)
+    }
+  }
+}
+
+$result = [PSCustomObject]@{
+  disks = $disks
+  extents = $extents
+  reliability = $reliability
+  nvmeSmart = $nvmeSmart
+  perfcounters = $perfcounters
+}
+$result | ConvertTo-Json -Compress -Depth 4
+`;
+}
+
+function ensureScript() {
+  if (combinedScriptPath) return;
+  try {
+    combinedScriptPath = path.join(os.tmpdir(), 'disken-all-smart-v2.ps1');
+    fs.writeFileSync(combinedScriptPath, '\uFEFF' + buildCombinedScript(), 'utf8');
+  } catch(e) {
+    combinedScriptPath = null;
+  }
+}
+
+function runCombinedQuery(timeout) {
+  ensureScript();
+  if (!combinedScriptPath) return null;
+  try {
+    const buf = execSync(
+      `powershell -NoProfile -ExecutionPolicy Bypass -File "${combinedScriptPath}"`,
+      { encoding: 'buffer', timeout: timeout || 12000, maxBuffer: 10 * 1024 * 1024, windowsHide: true }
+    );
+    const out = decodeOutput(buf).trim();
+    if (!out) return null;
+    return JSON.parse(out);
+  } catch(e) {
+    return null;
+  }
 }
 
 function getAllDiskSmart() {
-  const disks = getPhysicalDisks();
-  const extents = getDiskExtents();
-  const relData = getReliabilityData();
-  const nvmeData = getNvmeSmartData();
-  const perfData = getPerfCounters();
+  const data = runCombinedQuery(12000);
+  if (!data || !data.disks) return [];
 
-  const driveLetterMap = {};
-  for (const dk of Object.keys(extents)) {
-    if (extents[dk] && extents[dk].length > 0) {
-      driveLetterMap[dk] = extents[dk][0].DriveLetter;
+  const diskList = Array.isArray(data.disks) ? data.disks : [data.disks];
+  
+  // 构建磁盘到分区/卷的映射
+  const extentMap = {};
+  const volMap = {}; // driveLetter -> {size, free, label}
+  const extents = Array.isArray(data.extents) ? data.extents : (data.extents ? [data.extents] : []);
+  for (const item of extents) {
+    const dn = String(item.DiskNumber);
+    const dl = item.DriveLetter ? String(item.DriveLetter).toUpperCase() : null;
+    if (dl) {
+      if (!extentMap[dn]) extentMap[dn] = [];
+      const volSize = Number(item.VolumeSize) || 0;
+      const volFree = Number(item.VolumeFree) || 0;
+      const volLabel = item.VolumeLabel || null;
+      extentMap[dn].push({ DriveLetter: dl, Size: Number(item.Size) || 0, VolumeSize: volSize, VolumeFree: volFree, VolumeLabel: volLabel });
+      if (!volMap[dl]) {
+        volMap[dl] = { size: volSize, free: volFree, label: volLabel };
+      } else {
+        // 同一盘符可能有多个分区，累加大小
+        volMap[dl].size += volSize;
+        volMap[dl].free += volFree;
+      }
+    }
+  }
+  for (const k in extentMap) {
+    extentMap[k].sort((a, b) => b.Size - a.Size);
+  }
+
+  const relMap = {};
+  const relItems = Array.isArray(data.reliability) ? data.reliability : (data.reliability ? [data.reliability] : []);
+  for (const item of relItems) {
+    relMap[String(item.deviceId)] = item;
+  }
+
+  const nvmeMap = {};
+  const nvItems = Array.isArray(data.nvmeSmart) ? data.nvmeSmart : (data.nvmeSmart ? [data.nvmeSmart] : []);
+  for (const item of nvItems) {
+    if (item.nvOk) {
+      const dur = Number(item.nvDur) || 0;
+      const duw = Number(item.nvDuw) || 0;
+      const temp = Number(item.nvTemp) || -1;
+      const poh = Number(item.nvPoh) || 0;
+      nvmeMap[String(item.deviceId)] = {
+        temperature: temp > 0 && temp < 150 ? temp : null,
+        powerOnHours: poh > 0 && poh < 20000000 ? poh : null,
+        percentUsed: item.nvPercentUsed >= 0 && item.nvPercentUsed <= 100 ? Number(item.nvPercentUsed) : null,
+        totalBytesRead: dur > 0 ? dur * 512000 : null,
+        totalBytesWritten: duw > 0 ? duw * 512000 : null
+      };
     }
   }
 
-  return disks.map(d => {
+  const perfMap = {};
+  const perfItems = Array.isArray(data.perfcounters) ? data.perfcounters : (data.perfcounters ? [data.perfcounters] : []);
+  for (const item of perfItems) {
+    perfMap[String(item.deviceId)] = {
+      readPerSec: Number(item.readPerSec) || 0,
+      writePerSec: Number(item.writePerSec) || 0
+    };
+  }
+
+  const driveLetterMap = {};
+  const lettersList = {}; // deviceId -> [driveLetters]
+  const diskVolumes = {}; // deviceId -> {total, free}
+  for (const dk of Object.keys(extentMap)) {
+    if (extentMap[dk] && extentMap[dk].length > 0) {
+      const letters = extentMap[dk].map(e => e.DriveLetter);
+      driveLetterMap[dk] = letters[0];
+      lettersList[dk] = letters;
+      let totalV = 0, freeV = 0;
+      for (const e of extentMap[dk]) {
+        totalV += e.VolumeSize || 0;
+        freeV += e.VolumeFree || 0;
+      }
+      diskVolumes[dk] = { total: totalV, free: freeV };
+    }
+  }
+
+  return diskList.map(d => {
     const devId = String(d.DeviceID);
-    const rel = relData[devId] || {};
-    const nv = nvmeData[devId] || {};
-    const pf = perfData[devId] || {};
+    const rel = relMap[devId] || {};
+    const nv = nvmeMap[devId] || {};
+    const pf = perfMap[devId] || {};
     const driveLetter = driveLetterMap[devId] || null;
+    const allLetters = lettersList[devId] || [];
+    const vols = diskVolumes[devId] || { total: 0, free: 0 };
     const busType = d.BusType || 'Unknown';
 
     let temperature = null;
@@ -406,7 +390,8 @@ function getAllDiskSmart() {
       interfaceType: busType,
       mediaType: d.MediaType || 'Unspecified',
       capacity: d.Size || 0,
-      health: d.HealthStatus || 'Unknown',
+      healthStatus: d.HealthStatus || 'Unknown',
+      opStatus: d.OperationalStatus || 'OK',
       healthPercent: healthPercent,
       temperature: temperature,
       powerOnHours: powerOnHours,
@@ -415,6 +400,9 @@ function getAllDiskSmart() {
       totalReads: null,
       totalWrites: null,
       driveLetter: driveLetter,
+      driveLetters: allLetters,
+      volTotal: vols.total,
+      volFree: vols.free,
       readPerSec: pf.readPerSec || 0,
       writePerSec: pf.writePerSec || 0,
       dataSource: dataSource,
@@ -423,5 +411,8 @@ function getAllDiskSmart() {
     };
   });
 }
+
+// 预生成脚本
+ensureScript();
 
 module.exports = { getAllDiskSmart };

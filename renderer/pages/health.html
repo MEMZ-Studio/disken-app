@@ -101,9 +101,10 @@
     header.innerHTML = `${badge} ${action}`;
   }
 
-  async function load() {
+  async function load(forceRefresh) {
+    const opts = forceRefresh ? { refresh: true } : undefined;
     await checkAdmin();
-    const healthData = await Disken.api('/api/disk-health');
+    const healthData = await Disken.api('/api/disk-health', opts);
     const container = document.getElementById('healthGrid');
     if (!healthData || !healthData.disks || healthData.disks.length === 0) {
       container.innerHTML = '<div class="empty-state"><div class="empty-text">无法获取硬盘信息</div></div>';
@@ -224,7 +225,7 @@
   window.requestElevate = requestElevate;
 
   load();
-  setInterval(load, 30000);
+  setInterval(() => load(false), 30000);
 })();
 </script>
 </body>

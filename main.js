@@ -44,11 +44,14 @@ try { fs.appendFileSync(_startLog, `[${new Date().toISOString()}] main.js loaded
 // ── Sandbox / GPU workarounds ──
 function setupEnvironment() {
   try {
-    app.disableHardwareAcceleration();
-    app.commandLine.appendSwitch('disable-gpu');
-    app.commandLine.appendSwitch('disable-gpu-compositing');
-    app.commandLine.appendSwitch('disable-software-rasterizer');
+    // 启用GPU硬件加速提高渲染性能
+    // app.disableHardwareAcceleration();
+    // app.commandLine.appendSwitch('disable-gpu');
+    // app.commandLine.appendSwitch('disable-gpu-compositing');
+    // app.commandLine.appendSwitch('disable-software-rasterizer');
     app.commandLine.appendSwitch('no-sandbox');
+    app.commandLine.appendSwitch('enable-features', 'VaapiVideoDecoder');
+    app.commandLine.appendSwitch('disable-features', 'HardwareMediaKeyHandling');
 
     // Put user-data dir next to the binary, not under AppData\Roaming
     const baseDir = path.dirname(process.execPath);
@@ -80,80 +83,187 @@ const MIME = {
   '.ico': 'image/x-icon',
 };
 
+const fileCache = new Map();
+const CACHE_MAX = 100;
+const CACHE_TTL = 60000;
+
+const apiCache = new Map();
+const API_CACHE_TTL = {
+  '/api/disks': 5000,
+  '/api/disk-health': 10000,
+  '/api/system-info': 60000,
+  '/api/admin-status': 2000,
+};
+
+function getCachedApi(pathname) {
+  const ttl = API_CACHE_TTL[pathname];
+  if (!ttl) return null;
+  const entry = apiCache.get(pathname);
+  if (entry && Date.now() - entry.time < ttl) {
+    return entry.data;
+  }
+  return null;
+}
+
+function setCachedApi(pathname, data) {
+  const ttl = API_CACHE_TTL[pathname];
+  if (!ttl) return;
+  apiCache.set(pathname, { data, time: Date.now() });
+}
+
+function getCachedFile(filePath) {
+  const entry = fileCache.get(filePath);
+  if (entry && Date.now() - entry.time < CACHE_TTL) {
+    return entry;
+  }
+  return null;
+}
+
+function setCachedFile(filePath, content) {
+  if (fileCache.size >= CACHE_MAX) {
+    const firstKey = fileCache.keys().next().value;
+    fileCache.delete(firstKey);
+  }
+  fileCache.set(filePath, { content, time: Date.now() });
+}
+
+function serveFile(res, filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const mime = MIME[ext] || 'application/octet-stream';
+  try {
+    let content;
+    const cached = getCachedFile(filePath);
+    if (cached) {
+      content = cached.content;
+    } else {
+      content = fs.readFileSync(filePath);
+      if (ext === '.js' || ext === '.css' || ext === '.html') {
+        setCachedFile(filePath, content);
+      }
+    }
+    const headers = { 'Content-Type': mime };
+    if (ext === '.js' || ext === '.css' || ext === '.html') {
+      headers['Cache-Control'] = 'public, max-age=30';
+    } else {
+      headers['Cache-Control'] = 'public, max-age=300';
+    }
+    res.writeHead(200, headers);
+    res.end(content);
+  } catch(e) {
+    res.writeHead(404);
+    res.end('Not Found');
+  }
+}
+
 function startServer() {
-  const PORT = 0; // random available port
+  const PORT = 0;
   const ROOT = __dirname;
   const RENDERER = path.join(ROOT, 'renderer');
-
-  function serveFile(res, filePath) {
-    const ext = path.extname(filePath).toLowerCase();
-    const mime = MIME[ext] || 'application/octet-stream';
-    try {
-      const content = fs.readFileSync(filePath);
-      res.writeHead(200, { 'Content-Type': mime });
-      res.end(content);
-    } catch(e) {
-      res.writeHead(404);
-      res.end('Not Found');
-    }
-  }
 
   function sendJSON(res, data, status = 200) {
     res.writeHead(status, {
       'Content-Type': 'application/json; charset=utf-8',
-      'Access-Control-Allow-Origin': '*'
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-cache'
     });
     res.end(JSON.stringify(data));
   }
 
-  // Import server logic
-  const { getDisks, getDiskHealth, scanDirectory, searchFiles, analyzeFileTypes, listDirectory, getSystemInfo, resolvePath, isValidDir, formatSize, scanDirectoryAsync, analyzeFileTypesAsync, searchFilesAsync, analyzeJunk, analyzeJunkStream, deleteJunkFiles } = require('./server-core');
-  const { getIndex, getAllStatus } = require('./file-index');
+  // 启动时立即加载模块（require本身很快，不会阻塞窗口显示）
+  const sc = require('./server-core');
+  const fi = require('./file-index');
 
-  // 自动加载已有缓存（启动时预加载，延迟执行避免阻塞服务器启动）
-  setImmediate(() => {
+  // 后台预热缓存：窗口显示后异步加载数据，不阻塞启动
+  function warmupCache() {
     try {
-      const drives = getDisks();
+      // 预热磁盘列表（1ms，瞬间完成）
+      sc.getDisks();
+      // 预热索引（如果有缓存）
+      const drives = sc.getDisks();
       for (const d of drives) {
-        const idx = getIndex(d.mount);
+        const idx = fi.getIndex(d.mount);
         if (idx.hasCache(d.mount)) {
-          const loaded = idx.loadCache(d.mount);
-          if (loaded) console.log(`[Index] 预加载 ${d.mount} 索引: ${idx.fileCount} 个文件`);
+          idx.loadCache(d.mount);
         }
       }
-    } catch(e) { console.log('[Index] 预加载失败:', e.message); }
-  });
+    } catch(e) { console.log('[Warmup] phase1 error:', e.message); }
+
+    // 磁盘健康数据（较慢）在后台异步预热，不阻塞主进程
+    setTimeout(() => {
+      sc.getDiskHealthAsync().then(() => {
+        console.log('[Warmup] Disk health preloaded successfully');
+      }).catch(e => {
+        console.log('[Warmup] health preload error:', e.message);
+      });
+    }, 500);
+  }
 
   server = http.createServer((req, res) => {
     const url = new URL(req.url, `http://localhost`);
     const pathname = url.pathname;
+    const forceRefresh = url.searchParams.get('refresh') === '1';
 
-    if (pathname === '/api/disks') return sendJSON(res, { disks: getDisks() });
-    if (pathname === '/api/disk-health') return sendJSON(res, { disks: getDiskHealth() });
-    if (pathname === '/api/admin-status') return sendJSON(res, { isAdmin: isAdmin() });
+    // 强制刷新时清除所有缓存
+    if (forceRefresh) {
+      apiCache.clear();
+      sc.invalidateDiskCache();
+    } else {
+      // Check API cache first (only when not forcing refresh)
+      const cached = getCachedApi(pathname);
+      if (cached) return sendJSON(res, cached);
+    }
+
+    if (pathname === '/api/disks') {
+      const data = { disks: sc.getDisks(forceRefresh) };
+      if (!forceRefresh) setCachedApi(pathname, data);
+      return sendJSON(res, data);
+    }
+    if (pathname === '/api/disk-health') {
+      (async () => {
+        try {
+          const disks = await sc.getDiskHealthAsync(forceRefresh);
+          const data = { disks };
+          if (!forceRefresh) setCachedApi(pathname, data);
+          sendJSON(res, data);
+        } catch(e) {
+          console.log('[API] disk-health error:', e.message);
+          sendJSON(res, { disks: sc.getDiskHealth(forceRefresh) });
+        }
+      })();
+      return;
+    }
+    if (pathname === '/api/admin-status') {
+      const data = { isAdmin: isAdmin() };
+      if (!forceRefresh) setCachedApi(pathname, data);
+      return sendJSON(res, data);
+    }
     if (pathname === '/api/admin-elevate') {
       const success = restartAsAdmin();
       return sendJSON(res, { success });
     }
-    if (pathname === '/api/system-info') return sendJSON(res, getSystemInfo());
+    if (pathname === '/api/system-info') {
+      const data = sc.getSystemInfo(forceRefresh);
+      if (!forceRefresh) setCachedApi(pathname, data);
+      return sendJSON(res, data);
+    }
     if (pathname === '/api/list-dir') {
-      const dirPath = resolvePath(url.searchParams.get('path') || '/');
-      if (!isValidDir(dirPath)) return sendJSON(res, { error: '目录不存在', items: [] }, 400);
-      return sendJSON(res, { items: listDirectory(dirPath) });
+      const dirPath = sc.resolvePath(url.searchParams.get('path') || '/');
+      if (!sc.isValidDir(dirPath)) return sendJSON(res, { error: '目录不存在', items: [] }, 400);
+      return sendJSON(res, { items: sc.listDirectory(dirPath) });
     }
     if (pathname === '/api/scan') {
-      const scanPath = resolvePath(url.searchParams.get('path') || '/');
-      const depth = parseInt(url.searchParams.get('depth') || '3', 10);
-      const maxDepth = Math.min(Math.max(depth, 1), 6);
-      if (!isValidDir(scanPath)) return sendJSON(res, { error: '目录不存在', tree: null }, 400);
+      const scanPath = sc.resolvePath(url.searchParams.get('path') || '/');
+      const depth = parseInt(url.searchParams.get('depth') || '4', 10);
+      const maxDepth = Math.min(Math.max(depth, 1), 8);
+      if (!sc.isValidDir(scanPath)) return sendJSON(res, { error: '目录不存在', tree: null }, 400);
       (async () => {
         try {
-          const tree = await scanDirectoryAsync(scanPath, maxDepth);
-          sendJSON(res, { tree });
+          const result = await sc.scanDirectoryAsync(scanPath, maxDepth);
+          sendJSON(res, { tree: result.tree, truncated: result.truncated, filesScanned: result.filesScanned });
         } catch(e) {
           console.log('[API] scan error:', e.message);
           try {
-            sendJSON(res, { tree: scanDirectory(scanPath, 0, 1) });
+            sendJSON(res, { tree: sc.scanDirectory(scanPath, 0, 1), truncated: true, filesScanned: 0, fallback: true });
           } catch(e2) {
             sendJSON(res, { error: e.message, tree: null }, 500);
           }
@@ -165,15 +275,15 @@ function startServer() {
     if (pathname === '/api/index/status') {
       const drive = url.searchParams.get('drive') || '';
       if (drive) {
-        const idx = getIndex(drive);
+        const idx = fi.getIndex(drive);
         return sendJSON(res, { status: idx.getStatus() });
       }
-      return sendJSON(res, { all: getAllStatus() });
+      return sendJSON(res, { all: fi.getAllStatus() });
     }
     if (pathname === '/api/index/build') {
-      const drive = resolvePath(url.searchParams.get('drive') || '/');
-      if (!isValidDir(drive)) return sendJSON(res, { error: '目录不存在' }, 400);
-      const idx = getIndex(drive);
+      const drive = sc.resolvePath(url.searchParams.get('drive') || '/');
+      if (!sc.isValidDir(drive)) return sendJSON(res, { error: '目录不存在' }, 400);
+      const idx = fi.getIndex(drive);
       if (idx.isBuilding) return sendJSON(res, { error: '正在构建中' }, 400);
       (async () => {
         try {
@@ -188,7 +298,7 @@ function startServer() {
     if (pathname === '/api/index/cancel') {
       const drive = url.searchParams.get('drive') || '';
       if (drive) {
-        const idx = getIndex(drive);
+        const idx = fi.getIndex(drive);
         idx.cancelBuild();
       }
       return sendJSON(res, { success: true });
@@ -196,27 +306,25 @@ function startServer() {
     if (pathname === '/api/index/clear') {
       const drive = url.searchParams.get('drive') || '';
       if (drive) {
-        const idx = getIndex(drive);
+        const idx = fi.getIndex(drive);
         idx.clearCache(drive);
       }
       return sendJSON(res, { success: true });
     }
     if (pathname === '/api/search') {
       const query = url.searchParams.get('q') || '';
-      const searchPath = resolvePath(url.searchParams.get('path') || '/');
-      const useIndex = url.searchParams.get('index') !== '0'; // 默认使用索引
+      const searchPath = sc.resolvePath(url.searchParams.get('path') || '/');
+      const useIndex = url.searchParams.get('index') !== '0';
       const maxResults = parseInt(url.searchParams.get('max')) || 200;
-      if (!isValidDir(searchPath)) return sendJSON(res, { error: '目录不存在', results: [] }, 400);
+      if (!sc.isValidDir(searchPath)) return sendJSON(res, { error: '目录不存在', results: [] }, 400);
       if (!query.trim()) return sendJSON(res, { results: [], fromIndex: false });
       const typeFilter = url.searchParams.get('type') || '';
       const minSize = parseInt(url.searchParams.get('minSize')) || 0;
       const maxSize = parseInt(url.searchParams.get('maxSize')) || 0;
 
-      // 优先使用索引搜索（瞬间响应）
       if (useIndex) {
-        // 获取搜索路径所在的盘符
         const driveLetter = searchPath.match(/^([A-Z]:)/i)?.[1] || searchPath;
-        const idx = getIndex(driveLetter);
+        const idx = fi.getIndex(driveLetter);
         if (idx && idx.files.length > 0) {
           const startTime = Date.now();
           const results = idx.search(query, {
@@ -237,15 +345,14 @@ function startServer() {
         }
       }
 
-      // 回退到实时搜索
       (async () => {
         try {
-          const results = await searchFilesAsync(searchPath, query, { maxResults, typeFilter, minSize, maxSize: maxSize > 0 ? maxSize : Infinity });
+          const results = await sc.searchFilesAsync(searchPath, query, { maxResults, typeFilter, minSize, maxSize: maxSize > 0 ? maxSize : Infinity });
           sendJSON(res, { results, total: results.length, fromIndex: false });
         } catch(e) {
           console.log('[API] search error:', e.message);
           try {
-            const results = searchFiles(searchPath, query, { maxResults: 50 });
+            const results = sc.searchFiles(searchPath, query, { maxResults: 50 });
             sendJSON(res, { results, total: results.length, fromIndex: false });
           } catch(e2) {
             sendJSON(res, { error: e.message, results: [] }, 500);
@@ -255,16 +362,16 @@ function startServer() {
       return;
     }
     if (pathname === '/api/file-types') {
-      const scanPath = resolvePath(url.searchParams.get('path') || '/');
-      if (!isValidDir(scanPath)) return sendJSON(res, { error: '目录不存在', categories: [] }, 400);
+      const scanPath = sc.resolvePath(url.searchParams.get('path') || '/');
+      if (!sc.isValidDir(scanPath)) return sendJSON(res, { error: '目录不存在', categories: [] }, 400);
       (async () => {
         try {
-          const result = await analyzeFileTypesAsync(scanPath, 3);
+          const result = await sc.analyzeFileTypesAsync(scanPath, 3);
           sendJSON(res, result);
         } catch(e) {
           console.log('[API] file-types error:', e.message);
           try {
-            sendJSON(res, analyzeFileTypes(scanPath, 0, 1));
+            sendJSON(res, sc.analyzeFileTypes(scanPath, 0, 1));
           } catch(e2) {
             sendJSON(res, { error: e.message, categories: [] }, 500);
           }
@@ -280,14 +387,14 @@ function startServer() {
         'Access-Control-Allow-Origin': '*'
       });
       res.flushHeaders();
-      analyzeJunkStream((event) => {
+      sc.analyzeJunkStream((event) => {
         res.write(`data: ${JSON.stringify(event)}\n\n`);
       });
       res.end();
       return;
     }
     if (pathname === '/api/junk-scan') {
-      return sendJSON(res, analyzeJunk());
+      return sendJSON(res, sc.analyzeJunk());
     }
     if (pathname === '/api/junk-delete' && req.method === 'POST') {
       let body = '';
@@ -298,7 +405,7 @@ function startServer() {
           if (!Array.isArray(paths) || paths.length === 0) {
             return sendJSON(res, { error: '无效路径列表' }, 400);
           }
-          const result = deleteJunkFiles(paths);
+          const result = sc.deleteJunkFiles(paths);
           return sendJSON(res, { success: true, ...result });
         } catch(e) {
           return sendJSON(res, { error: e.message }, 500);
@@ -312,7 +419,7 @@ function startServer() {
       req.on('end', () => {
         try {
           const { filePath: targetPath } = JSON.parse(body);
-          const resolved = resolvePath(targetPath);
+          const resolved = sc.resolvePath(targetPath);
           if (!resolved) return sendJSON(res, { error: '无效路径' }, 400);
           if (!fs.existsSync(resolved)) return sendJSON(res, { error: '文件不存在' }, 404);
           const stat = fs.statSync(resolved);
@@ -329,8 +436,8 @@ function startServer() {
       req.on('end', () => {
         try {
           const { from, to } = JSON.parse(body);
-          const fromPath = resolvePath(from);
-          const toPath = resolvePath(to);
+          const fromPath = sc.resolvePath(from);
+          const toPath = sc.resolvePath(to);
           if (!fromPath || !toPath) return sendJSON(res, { error: '无效路径' }, 400);
           if (!fs.existsSync(fromPath)) return sendJSON(res, { error: '源文件不存在' }, 404);
           fs.renameSync(fromPath, toPath);
@@ -345,8 +452,8 @@ function startServer() {
       req.on('end', () => {
         try {
           const { from, to } = JSON.parse(body);
-          const fromPath = resolvePath(from);
-          const toPath = resolvePath(to);
+          const fromPath = sc.resolvePath(from);
+          const toPath = sc.resolvePath(to);
           if (!fromPath || !toPath) return sendJSON(res, { error: '无效路径' }, 400);
           if (!fs.existsSync(fromPath)) return sendJSON(res, { error: '源文件不存在' }, 404);
           const stat = fs.statSync(fromPath);
@@ -384,7 +491,7 @@ function startServer() {
       req.on('end', () => {
         try {
           const { filePath } = JSON.parse(body);
-          const resolved = resolvePath(filePath);
+          const resolved = sc.resolvePath(filePath);
           if (!resolved) return sendJSON(res, { error: '无效路径' }, 400);
           if (!fs.existsSync(resolved)) return sendJSON(res, { error: '文件不存在' }, 404);
           const { exec } = require('child_process');
@@ -437,6 +544,8 @@ function startServer() {
     server.listen(PORT, '127.0.0.1', () => {
       const port = server.address().port;
       console.log(`Disken server running on http://127.0.0.1:${port}`);
+      // 启动后立即在后台预热缓存（不阻塞窗口显示）
+      setImmediate(warmupCache);
       resolve(port);
     });
   });

@@ -44,19 +44,18 @@
     }
   }
 
-  async function load() {
-    let diskData, healthData, sysInfo;
+  async function load(forceRefresh) {
+    const opts = forceRefresh ? { refresh: true } : undefined;
+    let diskData, sysInfo;
+
+    // 先快速加载磁盘列表和系统信息（这两个很快）
     try {
       const results = await Promise.allSettled([
-        Disken.api('/api/disks'),
-        Disken.api('/api/disk-health'),
-        Disken.api('/api/system-info')
+        Disken.api('/api/disks', opts),
+        Disken.api('/api/system-info', opts)
       ]);
       diskData = results[0].status === 'fulfilled' ? results[0].value : null;
-      healthData = results[1].status === 'fulfilled' ? results[1].value : null;
-      sysInfo = results[2].status === 'fulfilled' ? results[2].value : null;
-      const errs = results.filter(r => r.status === 'rejected').map(r => r.reason && r.reason.message);
-      if (errs.length) console.warn('[Load] API errors:', errs);
+      sysInfo = results[1].status === 'fulfilled' ? results[1].value : null;
     } catch(e) {
       console.error('[Load] fetch error:', e);
     }
@@ -67,7 +66,7 @@
         el.innerHTML = `<div class="disk-card" style="grid-column:1/-1;text-align:center;padding:3rem 1rem;">
           <div style="font-size:2rem;margin-bottom:0.5rem;">⚠️</div>
           <div style="font-size:1.1rem;margin-bottom:0.5rem;">未获取到磁盘数据</div>
-          <div style="color:var(--muted);font-size:0.85rem;margin-bottom:1rem;">${diskData ? 'API 返回了空数据' : 'API 调用失败'}，请检查服务是否正常或点击刷新重试。</div>
+          <div style="color:var(--muted);font-size:0.85rem;margin-bottom:1rem;">API 调用失败，请点击刷新重试。</div>
           <button class="refresh-btn" onclick="location.reload()">重新加载</button>
         </div>`;
       }
@@ -102,7 +101,7 @@
       sysRow.style.display = 'none';
     }
 
-    // Disk cards
+    // Disk cards - 立即显示，不等健康数据
     document.getElementById('diskCards').innerHTML = disks.map(d => {
       const pct = d.usedPercent || 0;
       const barClass = pct < 70 ? 'safe' : pct < 90 ? 'warn' : 'danger';
@@ -157,38 +156,48 @@
       window.addEventListener('resize', () => chart.resize());
     }
 
-    // Health gauge - show ALL disks (no slice)
-    if (healthData && healthData.disks) {
-      const hDisks = healthData.disks;
-      const el = document.getElementById('chartHealthGauge');
-      const ink = Disken.cssVar('--ink');
-      const muted = Disken.cssVar('--muted');
-      el.innerHTML = `<div style="display:flex;flex-wrap:wrap;justify-content:center;align-items:center;height:100%;padding:1rem 0;gap:1.5rem;">` +
-        hDisks.map(d => {
-          const score = d.healthScore || 85;
-          const color = score > 80 ? '#10b981' : score > 60 ? '#f59e0b' : '#ef4444';
-          const r = 50;
-          const c = 2 * Math.PI * r;
-          const offset = c - (score / 100) * c;
-          return `
-          <div style="text-align:center;">
-            <svg width="120" height="120" viewBox="0 0 120 120">
-              <circle cx="60" cy="60" r="${r}" fill="none" stroke="#1e2230" stroke-width="10"/>
-              <circle cx="60" cy="60" r="${r}" fill="none" stroke="${color}" stroke-width="10"
-                stroke-dasharray="${c}" stroke-dashoffset="${offset}" stroke-linecap="round"
-                transform="rotate(-90, 60, 60)"/>
-              <text x="60" y="55" text-anchor="middle" fill="${ink}" font-size="22" font-weight="700">${score}</text>
-              <text x="60" y="75" text-anchor="middle" fill="${muted}" font-size="10">健康分</text>
-            </svg>
-            <div style="margin-top:0.5rem;font-size:0.8rem;color:${ink};font-weight:600;">${d.model || d.name}</div>
-            <div style="font-size:0.7rem;color:${muted}">${d.type}</div>
-          </div>`;
-        }).join('') + `</div>`;
+    // 健康数据单独异步加载（较慢，不阻塞UI）
+    const healthEl = document.getElementById('chartHealthGauge');
+    if (healthEl) {
+      healthEl.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--muted);">正在加载健康数据...</div>';
+    }
+    try {
+      const healthData = await Disken.api('/api/disk-health', opts);
+      if (healthData && healthData.disks) {
+        const hDisks = healthData.disks;
+        const el = document.getElementById('chartHealthGauge');
+        const ink = Disken.cssVar('--ink');
+        const muted = Disken.cssVar('--muted');
+        el.innerHTML = `<div style="display:flex;flex-wrap:wrap;justify-content:center;align-items:center;height:100%;padding:1rem 0;gap:1.5rem;">` +
+          hDisks.map(d => {
+            const score = d.healthScore || 85;
+            const color = score > 80 ? '#10b981' : score > 60 ? '#f59e0b' : '#ef4444';
+            const r = 50;
+            const c = 2 * Math.PI * r;
+            const offset = c - (score / 100) * c;
+            return `
+            <div style="text-align:center;">
+              <svg width="120" height="120" viewBox="0 0 120 120">
+                <circle cx="60" cy="60" r="${r}" fill="none" stroke="#1e2230" stroke-width="10"/>
+                <circle cx="60" cy="60" r="${r}" fill="none" stroke="${color}" stroke-width="10"
+                  stroke-dasharray="${c}" stroke-dashoffset="${offset}" stroke-linecap="round"
+                  transform="rotate(-90, 60, 60)"/>
+                <text x="60" y="55" text-anchor="middle" fill="${ink}" font-size="22" font-weight="700">${score}</text>
+                <text x="60" y="75" text-anchor="middle" fill="${muted}" font-size="10">健康分</text>
+              </svg>
+              <div style="margin-top:0.5rem;font-size:0.8rem;color:${ink};font-weight:600;">${d.model || d.name}</div>
+              <div style="font-size:0.7rem;color:${muted}">${d.type}</div>
+            </div>`;
+          }).join('') + `</div>`;
+      }
+    } catch(e) {
+      console.error('[Load] health data error:', e);
+      if (healthEl) healthEl.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--warning);">健康数据加载失败</div>';
     }
   }
 
   load();
-  setInterval(load, 30000);
+  setInterval(() => load(false), 30000);
 })();
 </script>
 </body>

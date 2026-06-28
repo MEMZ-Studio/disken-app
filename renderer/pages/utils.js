@@ -1,9 +1,13 @@
 /* Disken Shared Utilities */
 const Disken = {
   // API helper
-  async api(url) {
+  async api(url, opts) {
     try {
-      const res = await fetch(url);
+      let finalUrl = url;
+      if (opts && opts.refresh) {
+        finalUrl += (url.includes('?') ? '&' : '?') + 'refresh=1';
+      }
+      const res = await fetch(finalUrl, { cache: 'no-store' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return await res.json();
     } catch(e) {
@@ -290,7 +294,7 @@ const Disken = {
         btn.innerHTML = '&#x21bb; 刷新';
       };
       if (callback) {
-        const result = callback();
+        const result = callback(true);
         if (result && typeof result.then === 'function') {
           result.then(done).catch(done);
         } else {
@@ -377,6 +381,33 @@ const Disken = {
       { id: 'cleaner', icon: '🧹', label: '垃圾清理', href: '/pages/cleaner.html' },
       { id: 'health', icon: '💽', label: '硬盘状态', href: '/pages/health.html' },
     ];
+
+    // Preload other pages after a short delay
+    setTimeout(() => {
+      pages.forEach(p => {
+        if (p.id !== activePage) {
+          const link = document.createElement('link');
+          link.rel = 'prefetch';
+          link.href = p.href;
+          link.as = 'document';
+          document.head.appendChild(link);
+        }
+      });
+      // Also prefetch echarts for pages that need it
+      if (!document.querySelector('script[src*="echarts"]')) {
+        const echartsPages = ['index', 'visualization'];
+        if (echartsPages.includes(activePage)) {
+          // already loaded or will be loaded by the page
+        } else {
+          const link = document.createElement('link');
+          link.rel = 'prefetch';
+          link.href = '/_shared/js/echarts.min.js';
+          link.as = 'script';
+          document.head.appendChild(link);
+        }
+      }
+    }, 500);
+
     return `
     <aside class="sidebar">
       <div class="sidebar-header">
@@ -385,7 +416,7 @@ const Disken = {
       </div>
       <nav class="sidebar-nav">
         ${pages.map(p => `
-          <a class="nav-item ${p.id === activePage ? 'active' : ''}" href="${p.href}">
+          <a class="nav-item ${p.id === activePage ? 'active' : ''}" href="${p.href}" data-page="${p.id}">
             <span class="nav-icon">${p.icon}</span> ${p.label}
           </a>
         `).join('')}
@@ -409,6 +440,25 @@ const Disken = {
       ${this.topbar(title)}
       <div class="content" id="content"></div>
     </div>`;
+
+    // Optimize navigation clicks: instant visual feedback
+    document.querySelectorAll('.nav-item[data-page]').forEach(link => {
+      link.addEventListener('click', (e) => {
+        if (link.dataset.page === activePage) {
+          e.preventDefault();
+          return;
+        }
+        // Visual feedback: immediately set active state
+        document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+        link.classList.add('active');
+        // Add brief loading indicator
+        const content = document.getElementById('content');
+        if (content) {
+          content.style.opacity = '0.4';
+          content.style.transition = 'opacity 0.1s';
+        }
+      });
+    });
 
     if (window.diskenAPI && window.diskenAPI.onShowAbout) {
       window.diskenAPI.onShowAbout(() => {
@@ -436,7 +486,7 @@ const Disken = {
           <div class="about-logo">磁</div>
           <div class="about-title-group">
             <h2 class="about-title">磁盘精灵</h2>
-            <div class="about-subtitle">Disken v1.4.0</div>
+            <div class="about-subtitle">Disken v1.4.2</div>
           </div>
         </div>
         <div class="about-body">

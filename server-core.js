@@ -49,7 +49,7 @@ function getWorkerPath() {
 function runWorker(task, dirPath, options = {}) {
   return new Promise((resolve, reject) => {
     const workerPath = getWorkerPath();
-    const timeoutMs = options.timeout || 30000;
+    const timeoutMs = options.timeout || 60000;
     const maxDepth = options.maxDepth || 3;
     const workerData = { task, dirPath, maxDepth, ...options };
 
@@ -136,9 +136,70 @@ function psJson(cmd, timeout, depth) {
 // ── API: Get Disk Info (Windows only, with caching) ──
 let _disksCache = { data: null, time: 0 };
 
-function getDisks() {
+function invalidateDiskCache() {
+  _disksCache = { data: null, time: 0 };
+  _diskHealthCache = { data: null, time: 0 };
+  _smartPending = null;
+}
+
+let _smartPending = null;
+
+function getSmartWorkerPath() {
+  const candidates = [];
+  candidates.push(path.join(__dirname, 'smart-worker.js'));
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, 'smart-worker.js'));
+    candidates.push(path.join(process.resourcesPath, 'app', 'smart-worker.js'));
+  }
+  for (const p of candidates) {
+    try { if (fs.existsSync(p)) return p; } catch(e) {}
+  }
+  return path.join(__dirname, 'smart-worker.js');
+}
+
+function getAllDiskSmartAsync() {
+  if (_smartPending) return _smartPending;
+  _smartPending = new Promise((resolve, reject) => {
+    const workerPath = getSmartWorkerPath();
+    let worker;
+    try {
+      worker = new Worker(workerPath, { workerData: {} });
+    } catch(e) {
+      _smartPending = null;
+      return reject(e);
+    }
+    const timer = setTimeout(() => {
+      try { worker.terminate(); } catch(e) {}
+      _smartPending = null;
+      reject(new Error('SMART data timeout'));
+    }, 15000);
+    worker.on('message', (msg) => {
+      clearTimeout(timer);
+      try { worker.terminate(); } catch(e) {}
+      _smartPending = null;
+      if (msg.success) {
+        resolve(msg.data || []);
+      } else {
+        reject(new Error(msg.error || 'SMART worker failed'));
+      }
+    });
+    worker.on('error', (err) => {
+      clearTimeout(timer);
+      _smartPending = null;
+      reject(err);
+    });
+    worker.on('exit', (code) => {
+      clearTimeout(timer);
+      _smartPending = null;
+      if (code !== 0) reject(new Error('SMART worker exited with code ' + code));
+    });
+  });
+  return _smartPending;
+}
+
+function getDisks(forceRefresh) {
   const now = Date.now();
-  if (_disksCache.data && (now - _disksCache.time) < CACHE_TTL) {
+  if (!forceRefresh && _disksCache.data && (now - _disksCache.time) < 15000) {
     return _disksCache.data;
   }
   const result = getDisksWin();
@@ -149,49 +210,50 @@ function getDisks() {
 function getDisksWin() {
   const disks = [];
   try {
-    const vols = psJson(`Get-Volume | Where-Object { $_.DriveType -eq 'Fixed' -and $_.DriveLetter } | Select-Object DriveLetter,SizeRemaining,Size,FileSystemLabel`);
-    if (vols && vols.length > 0) {
-      for (const v of vols) {
-        const letter = (v.DriveLetter || '').toUpperCase() + ':';
-        if (!/^[A-Z]:$/.test(letter)) continue;
-        const totalNum = parseInt(v.Size, 10) || 0;
-        const freeNum = parseInt(v.SizeRemaining, 10) || 0;
-        const usedNum = totalNum - freeNum;
-        if (totalNum === 0) continue;
-        const label = v.FileSystemLabel || letter;
-        disks.push({
-          device: letter, mount: letter,
-          total: formatSize(totalNum), totalBytes: totalNum,
-          used: formatSize(usedNum), usedBytes: usedNum,
-          avail: formatSize(freeNum), availBytes: freeNum,
-          usedPercent: totalNum > 0 ? (usedNum / totalNum * 100) : 0,
-          label: label || letter
-        });
-      }
-    }
-    if (disks.length === 0) {
-      for (let c = 65; c <= 90; c++) {
-        const letter = String.fromCharCode(c) + ':\\';
+    for (let c = 65; c <= 90; c++) {
+      const letter = String.fromCharCode(c);
+      const root = letter + ':\\';
+      try {
+        fs.statSync(root);
+        let totalNum = 0, freeNum = 0;
         try {
-          const stat = fs.statSync(letter);
-          if (stat) {
-            const total = 100 * 1024 * 1024 * 1024;
-            disks.push({ device: letter, mount: letter, total: '100.0 GB', totalBytes: total, used: '50.0 GB', usedBytes: total/2, avail: '50.0 GB', availBytes: total/2, usedPercent: 50, label: letter });
+          if (fs.statfsSync) {
+            const stfs = fs.statfsSync(root);
+            totalNum = Number(stfs.bsize) * Number(stfs.blocks);
+            freeNum = Number(stfs.bsize) * Number(stfs.bavail);
           }
         } catch(e) {}
-      }
+        if (totalNum > 0) {
+          const usedNum = totalNum - freeNum;
+          disks.push({
+            device: letter + ':',
+            mount: letter + ':',
+            total: formatSize(totalNum),
+            totalBytes: totalNum,
+            used: formatSize(usedNum),
+            usedBytes: usedNum,
+            avail: formatSize(freeNum),
+            availBytes: freeNum,
+            usedPercent: (usedNum / totalNum * 100),
+            label: letter + ' 盘',
+            isRemovable: false
+          });
+        }
+      } catch(e) {}
     }
   } catch(e) {
-    // Fallback: C drive only
+    // fallback
+  }
+  if (disks.length === 0) {
     disks.push({
       device: 'C:', mount: 'C:',
       total: '100.0 GB', totalBytes: 107374182400,
       used: '50.0 GB', usedBytes: 53687091200,
       avail: '50.0 GB', availBytes: 53687091200,
-      usedPercent: 50, label: '系统盘'
+      usedPercent: 50, label: '系统盘', isRemovable: false
     });
   }
-  return disks.length > 0 ? disks : [{ device: 'C:', mount: 'C:', total: '100.0 GB', totalBytes: 107374182400, used: '50.0 GB', usedBytes: 53687091200, avail: '50.0 GB', availBytes: 53687091200, usedPercent: 50, label: '系统盘' }];
+  return disks;
 }
 
 function fallbackDisks() {
@@ -209,11 +271,11 @@ function fallbackDisks() {
 
 // ── API: Get Disk Health (Windows only, with caching) ──
 let _diskHealthCache = { data: null, time: 0 };
-const CACHE_TTL = 60000; // 60秒缓存
+const CACHE_TTL = 15000; // 15秒缓存（刷新可强制绕过）
 
-function getDiskHealth() {
+function getDiskHealth(forceRefresh) {
   const now = Date.now();
-  if (_diskHealthCache.data && (now - _diskHealthCache.time) < CACHE_TTL) {
+  if (!forceRefresh && _diskHealthCache.data && (now - _diskHealthCache.time) < CACHE_TTL) {
     return _diskHealthCache.data;
   }
   const result = getDiskHealthWin();
@@ -221,57 +283,29 @@ function getDiskHealth() {
   return result;
 }
 
-function getDiskHealthWin() {
+async function getDiskHealthAsync(forceRefresh) {
+  const now = Date.now();
+  if (!forceRefresh && _diskHealthCache.data && (now - _diskHealthCache.time) < CACHE_TTL) {
+    return _diskHealthCache.data;
+  }
+  try {
+    const smartDisks = await getAllDiskSmartAsync();
+    const result = buildDiskHealthFromSmart(smartDisks);
+    _diskHealthCache = { data: result, time: Date.now() };
+    return result;
+  } catch(e) {
+    console.log('[SMART] Async worker failed, falling back to sync:', e.message);
+    return getDiskHealth(forceRefresh);
+  }
+}
+
+function buildDiskHealthFromSmart(smartDisks) {
   const disks = [];
   try {
-    // 使用 @() 子表达式代替变量赋值，避免 $ 被 shell 吞掉
-    const psCmd = `@{ PhysicalDisks = @(Get-PhysicalDisk -ErrorAction SilentlyContinue | Select-Object DeviceID,FriendlyName,MediaType,Size,HealthStatus,OperationalStatus,BusType); Partitions = @(Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | Select-Object DiskNumber,DriveLetter); Volumes = @(Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | Select-Object DriveLetter,Size,SizeRemaining) }`;
-    const data = psJson(psCmd, 10000, 3);
-
-    function toArr(v) {
-      if (Array.isArray(v)) return v;
-      if (v && typeof v === 'object') return [v];
-      return [];
-    }
-
-    let phys = [], parts = [], vols = [];
-    if (data && data.length > 0 && data[0]) {
-      phys = toArr(data[0].PhysicalDisks);
-      parts = toArr(data[0].Partitions);
-      vols = toArr(data[0].Volumes);
-    }
-    if (!phys || phys.length === 0) {
+    if (!smartDisks || smartDisks.length === 0) {
       disks.push({ name: 'disk0', type: 'SSD', model: '系统磁盘', temperature: null, status: '正常', healthScore: 85, smartAvailable: false, totalBytes: 0, availBytes: 0, total: '—', avail: '—', driveLetters: '', powerOnDisplay: null, readDisplay: null, writeDisplay: null });
       return disks;
     }
-
-    const diskToLetters = {};
-    for (const p of parts) {
-      const dn = String(p.DiskNumber);
-      const dl = (p.DriveLetter || '').toUpperCase();
-      if (!dl) continue;
-      if (!diskToLetters[dn]) diskToLetters[dn] = [];
-      diskToLetters[dn].push(dl);
-    }
-
-    const letterToVol = {};
-    for (const v of vols) {
-      const dl = (v.DriveLetter || '').toUpperCase();
-      if (!dl) continue;
-      letterToVol[dl] = {
-        total: parseInt(v.Size, 10) || 0,
-        free: parseInt(v.SizeRemaining, 10) || 0
-      };
-    }
-
-    // 获取 S.M.A.R.T. 数据（通过 IOCTL，尝试免管理员权限读取）
-    let smartMap = {};
-    try {
-      const smartDisks = getAllDiskSmart();
-      for (const sd of smartDisks) {
-        smartMap[sd.deviceId] = sd;
-      }
-    } catch (e) {}
 
     function hashStr(s) {
       let h = 0;
@@ -284,12 +318,13 @@ function getDiskHealthWin() {
 
     function calcHealthScore(healthStatus, opStatus, isSSD, usagePercent, deviceId, model) {
       let base = 85;
-      if (healthStatus === 'Healthy') {
-        base = opStatus === 'OK' ? 96 : 92;
-      } else if (healthStatus === 'Warning') {
-        base = opStatus === 'OK' ? 72 : 62;
-      } else if (healthStatus === 'Unhealthy') {
-        base = opStatus === 'OK' ? 42 : 28;
+      const hs = String(healthStatus || '').toLowerCase();
+      if (hs === 'healthy') {
+        base = String(opStatus || '').toLowerCase() === 'ok' ? 96 : 92;
+      } else if (hs === 'warning') {
+        base = String(opStatus || '').toLowerCase() === 'ok' ? 72 : 62;
+      } else if (hs === 'unhealthy') {
+        base = String(opStatus || '').toLowerCase() === 'ok' ? 42 : 28;
       } else {
         base = 78;
       }
@@ -304,28 +339,21 @@ function getDiskHealthWin() {
       return Math.round(base);
     }
 
-    for (const p of phys) {
-      const deviceId = String(p.DeviceID);
-      const model = p.FriendlyName || ('磁盘' + deviceId);
-      const mediaType = (p.MediaType || '').toUpperCase();
-      const isSSD = mediaType === 'SSD' || mediaType.includes('SSD');
-      const healthStatus = p.HealthStatus || 'Healthy';
-      const opStatus = p.OperationalStatus || 'OK';
+    for (const sd of smartDisks) {
+      const deviceId = String(sd.deviceId);
+      const model = sd.model || ('磁盘' + deviceId);
+      const mediaType = String(sd.mediaType || '').toUpperCase();
+      const isSSD = mediaType === 'SSD' || mediaType.includes('SSD') || sd.interfaceType === 'NVMe';
+      const healthStatus = sd.healthStatus || 'Healthy';
+      const opStatus = sd.opStatus || 'OK';
 
-      const statusMap = { 'Healthy': '健康', 'Warning': '警告', 'Unhealthy': '异常', 'Unknown': '未知' };
-      const status = statusMap[healthStatus] || healthStatus;
+      const physTotal = parseInt(sd.capacity, 10) || 0;
+      const letters = Array.isArray(sd.driveLetters) ? sd.driveLetters : (sd.driveLetter ? [sd.driveLetter] : []);
 
-      const physTotal = parseInt(p.Size, 10) || 0;
-      const letters = diskToLetters[deviceId] || [];
-      let totalBytes = physTotal;
-      let availBytes = 0;
-      for (const dl of letters) {
-        const vol = letterToVol[dl];
-        if (vol) {
-          if (totalBytes === 0) totalBytes = vol.total;
-          availBytes += vol.free;
-        }
-      }
+      let totalBytes = parseInt(sd.volTotal, 10) || physTotal;
+      let availBytes = parseInt(sd.volFree, 10) || 0;
+
+      if (totalBytes === 0) totalBytes = physTotal;
       if (totalBytes > 0 && availBytes === 0) {
         availBytes = Math.floor(totalBytes * 0.3);
       }
@@ -333,29 +361,24 @@ function getDiskHealthWin() {
       const usagePercent = totalBytes > 0 ? ((totalBytes - availBytes) / totalBytes * 100) : 0;
       const healthScore = calcHealthScore(healthStatus, opStatus, isSSD, usagePercent, deviceId, model);
 
-      // 合并 S.M.A.R.T. 数据
-      const smart = smartMap[deviceId] || smartMap[String(deviceId)] || {};
-      const temperature = smart.temperature != null ? smart.temperature : null;
-      const powerOnHours = smart.powerOnHours != null && smart.powerOnHours > 0 ? smart.powerOnHours : null;
-      const totalBytesRead = smart.totalBytesRead != null && smart.totalBytesRead > 0 ? smart.totalBytesRead : null;
-      const totalBytesWritten = smart.totalBytesWritten != null && smart.totalBytesWritten > 0 ? smart.totalBytesWritten : null;
-      const isUsb = smart.isUsb === true;
-      const smartUnavailable = smart.smartUnavailable === true;
+      const temperature = sd.temperature != null ? sd.temperature : null;
+      const powerOnHours = sd.powerOnHours != null && sd.powerOnHours > 0 ? sd.powerOnHours : null;
+      const totalBytesRead = sd.totalBytesRead != null && sd.totalBytesRead > 0 ? sd.totalBytesRead : null;
+      const totalBytesWritten = sd.totalBytesWritten != null && sd.totalBytesWritten > 0 ? sd.totalBytesWritten : null;
+      const isUsb = sd.isUsb === true || sd.interfaceType === 'USB';
+      const smartUnavailable = sd.smartUnavailable === true;
       const smartAvailable = (temperature != null || powerOnHours != null || totalBytesRead != null || totalBytesWritten != null);
 
-      // 格式化通电时间
       let powerOnDisplay = null;
       if (powerOnHours !== null && powerOnHours > 0) {
         const days = Math.floor(powerOnHours / 24);
         const hours = powerOnHours % 24;
-        powerOnDisplay = days > 0 ? `${days}天${hours}小时` : `${hours}小时`;
+        powerOnDisplay = days > 0 ? days + '天' + hours + '小时' : hours + '小时';
       }
 
-      // 格式化总读写量
       const readDisplay = totalBytesRead !== null ? formatSize(totalBytesRead) : null;
       const writeDisplay = totalBytesWritten !== null ? formatSize(totalBytesWritten) : null;
 
-      // 根据温度调整健康分数
       let finalScore = healthScore;
       if (temperature !== null) {
         const tempPenalty = temperature > 65 ? -10 : temperature > 55 ? -5 : temperature > 45 ? -2 : 0;
@@ -375,8 +398,8 @@ function getDiskHealthWin() {
         isUsb: isUsb,
         totalBytes: totalBytes,
         availBytes: availBytes,
-        total: formatSize(totalBytes),
-        avail: formatSize(availBytes),
+        total: totalBytes > 0 ? formatSize(totalBytes) : '—',
+        avail: availBytes > 0 ? formatSize(availBytes) : '—',
         driveLetters: letters.join(', '),
         powerOnHours: powerOnHours,
         powerOnDisplay: powerOnDisplay,
@@ -384,8 +407,8 @@ function getDiskHealthWin() {
         totalBytesWritten: totalBytesWritten,
         readDisplay: readDisplay,
         writeDisplay: writeDisplay,
-        perfReadBytesPerSec: smart.readPerSec != null ? smart.readPerSec : null,
-        perfWriteBytesPerSec: smart.writePerSec != null ? smart.writePerSec : null
+        perfReadBytesPerSec: sd.readPerSec != null ? sd.readPerSec : null,
+        perfWriteBytesPerSec: sd.writePerSec != null ? sd.writePerSec : null
       });
     }
   } catch(e) {
@@ -399,6 +422,11 @@ function getDiskHealthWin() {
     });
   }
   return disks;
+}
+
+function getDiskHealthWin() {
+  const smartDisks = getAllDiskSmart();
+  return buildDiskHealthFromSmart(smartDisks);
 }
 
 // ── API: List directory (for directory picker) ──
@@ -436,26 +464,99 @@ function listDirectory(dirPath) {
 }
 
 // ── API: Scan directory for treemap ──
-function scanDirectory(dirPath, depth = 0, maxDepth = 3) {
-  if (depth > maxDepth) return null;
-  const result = { name: path.basename(dirPath) || dirPath, size: 0, path: dirPath, children: [] };
+let _scanFilesCount = 0;
+const _SCAN_MAX_FILES = 80000;
+const _QUICK_DEPTH = 2;
+const _MAX_ENTRIES = 2000;
+
+function _directFileSize(dirPath) {
+  let total = 0;
   try {
     const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-    for (const entry of entries) {
+    const limit = Math.min(entries.length, _MAX_ENTRIES);
+    for (let i = 0; i < limit; i++) {
+      const entry = entries[i];
+      if (entry.isFile() || entry.isSymbolicLink()) {
+        try { total += fs.statSync(path.join(dirPath, entry.name)).size; } catch(e) {}
+      }
+    }
+  } catch(e) {}
+  return total;
+}
+
+function _quickDirSize(dirPath, depth) {
+  if (_scanFilesCount >= _SCAN_MAX_FILES || depth > _QUICK_DEPTH) return 0;
+  let total = 0;
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    const limit = Math.min(entries.length, _MAX_ENTRIES);
+    const subDirs = [];
+    for (let i = 0; i < limit; i++) {
+      if (_scanFilesCount >= _SCAN_MAX_FILES) break;
+      const entry = entries[i];
+      const fullPath = path.join(dirPath, entry.name);
+      try {
+        if (entry.isFile() || entry.isSymbolicLink()) {
+          total += fs.statSync(fullPath).size;
+          _scanFilesCount++;
+        } else if (entry.isDirectory()) {
+          subDirs.push(fullPath);
+        }
+      } catch(e) {}
+    }
+    for (const sp of subDirs) {
+      if (_scanFilesCount >= _SCAN_MAX_FILES) break;
+      total += _quickDirSize(sp, depth + 1);
+    }
+  } catch(e) {}
+  return total;
+}
+
+function scanDirectory(dirPath, depth = 0, maxDepth = 3) {
+  if (depth === 0) _scanFilesCount = 0;
+  const result = { name: path.basename(dirPath) || dirPath, size: 0, path: dirPath, children: [] };
+  if (_scanFilesCount >= _SCAN_MAX_FILES) return result;
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    const limit = Math.min(entries.length, _MAX_ENTRIES);
+    const childDirs = [];
+    const childFiles = [];
+    for (let i = 0; i < limit; i++) {
+      const entry = entries[i];
       if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
       const fullPath = path.join(dirPath, entry.name);
       try {
-        if (entry.isDirectory()) {
-          const sub = scanDirectory(fullPath, depth + 1, maxDepth);
-          if (sub && sub.size > 0) { result.children.push(sub); result.size += sub.size; }
-        } else if (entry.isFile() || entry.isSymbolicLink()) {
-          const stat = fs.statSync(fullPath);
-          result.size += stat.size;
-          result.children.push({ name: entry.name, size: stat.size, path: fullPath, children: [] });
+        if (entry.isDirectory()) childDirs.push({ name: entry.name, fullPath });
+        else if (entry.isFile() || entry.isSymbolicLink()) childFiles.push({ name: entry.name, fullPath });
+      } catch(e) {}
+    }
+    for (const cf of childFiles) {
+      if (_scanFilesCount >= _SCAN_MAX_FILES) break;
+      try {
+        const stat = fs.statSync(cf.fullPath);
+        result.size += stat.size;
+        if (stat.size > 0) result.children.push({ name: cf.name, size: stat.size, path: cf.fullPath, children: [] });
+        _scanFilesCount++;
+      } catch(e) {}
+    }
+    const dirEstimates = childDirs.map(cd => ({ ...cd, est: _directFileSize(cd.fullPath) }));
+    dirEstimates.sort((a, b) => b.est - a.est);
+    for (const cd of dirEstimates) {
+      if (_scanFilesCount >= _SCAN_MAX_FILES) break;
+      try {
+        if (depth >= maxDepth) {
+          const sz = _quickDirSize(cd.fullPath, 0);
+          result.size += sz;
+          if (sz > 0) result.children.push({ name: cd.name, size: sz, path: cd.fullPath, children: [] });
+        } else {
+          const sub = scanDirectory(cd.fullPath, depth + 1, maxDepth);
+          if (sub) { result.children.push(sub); result.size += sub.size; }
         }
       } catch(e) {}
     }
   } catch(e) {}
+  result.children.sort((a, b) => b.size - a.size);
+  if (result.children.length > 150) result.children = result.children.slice(0, 150);
   return result;
 }
 
@@ -567,9 +668,9 @@ function analyzeFileTypes(dirPath, maxDepth = 3) {
 // ── API: Get system info (with caching) ──
 let _sysInfoCache = { data: null, time: 0 };
 
-function getSystemInfo() {
+function getSystemInfo(forceRefresh) {
   const now = Date.now();
-  if (_sysInfoCache.data && (now - _sysInfoCache.time) < CACHE_TTL) {
+  if (!forceRefresh && _sysInfoCache.data && (now - _sysInfoCache.time) < 300000) {
     return _sysInfoCache.data;
   }
   let osVersion = '';
@@ -818,12 +919,12 @@ function analyzeJunkStream(onProgress) {
 }
 
 module.exports = {
-  getDisks, getDiskHealth, scanDirectory, searchFiles, analyzeFileTypes,
-  listDirectory, getSystemInfo,
+  getDisks, getDiskHealth, getDiskHealthAsync, scanDirectory, searchFiles, analyzeFileTypes,
+  listDirectory, getSystemInfo, invalidateDiskCache,
   analyzeJunk, analyzeJunkStream, deleteJunkFiles,
   resolvePath, isValidDir, formatSize,
   // Async worker-based versions (non-blocking)
-  scanDirectoryAsync: (dirPath, maxDepth = 3) => runWorker('scan', dirPath, { maxDepth }).then(r => r.tree),
+  scanDirectoryAsync: (dirPath, maxDepth = 3) => runWorker('scan', dirPath, { maxDepth }).then(r => ({ tree: r.tree, truncated: r.truncated, filesScanned: r.filesScanned })),
   analyzeFileTypesAsync: (dirPath, maxDepth = 3) => runWorker('filetypes', dirPath, { maxDepth }),
   searchFilesAsync: (dirPath, query, opts = {}) => runWorker('search', dirPath, { query, maxResults: opts.maxResults || 200, typeFilter: opts.typeFilter || '', minSize: opts.minSize || 0, maxSize: opts.maxSize || Infinity, maxDepth: opts.maxDepth || 5 }).then(r => r.results),
 };

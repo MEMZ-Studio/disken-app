@@ -217,6 +217,36 @@
   border-radius: 0 0 8px 8px;
   margin-top: -1px;
 }
+.admin-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6rem 1rem;
+  background: rgba(245,158,11,0.08);
+  border: 1px solid rgba(245,158,11,0.25);
+  border-radius: 10px;
+  margin-bottom: 0.75rem;
+  font-size: 0.82rem;
+  color: #f59e0b;
+}
+.admin-banner.ok {
+  background: rgba(16,185,129,0.08);
+  border-color: rgba(16,185,129,0.25);
+  color: #10b981;
+}
+.admin-banner-btn {
+  padding: 0.4rem 0.9rem;
+  border-radius: 7px;
+  font-size: 0.8rem;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+.admin-banner-btn:hover { opacity: 0.8; }
 </style>
 </head>
 <body>
@@ -233,8 +263,49 @@
   let selectedNode = null;
   let clipboard = { mode: null, items: [] };
   let chart = null;
+  let isAdmin = false;
+  let lastScanTruncated = false;
+  let lastFilesScanned = 0;
 
-  content.innerHTML = '<div id="dirPickerContainer"></div>' +
+  async function checkAdmin() {
+    try {
+      const res = await Disken.api('/api/admin-status');
+      isAdmin = res && res.isAdmin;
+    } catch(e) { isAdmin = false; }
+    updateAdminBanner();
+  }
+
+  function requestElevate() {
+    Disken.api('/api/admin-elevate');
+  }
+
+  function isSystemPath(p) {
+    if (!p) return false;
+    const upper = p.toUpperCase();
+    return upper.startsWith('C:') || upper.includes('\\WINDOWS') || upper.includes('\\PROGRAM FILES') || upper.startsWith('/');
+  }
+
+  function updateAdminBanner() {
+    const banner = document.getElementById('adminBanner');
+    if (!banner) return;
+    const needAdmin = isSystemPath(currentPath);
+    if (isAdmin) {
+      banner.className = 'admin-banner ok';
+      banner.innerHTML = '<span>🛡️ 已获取管理员权限，可完整扫描系统目录</span>';
+      banner.style.display = 'flex';
+    } else if (needAdmin) {
+      banner.className = 'admin-banner';
+      banner.innerHTML = '<span>🔒 扫描系统目录建议以管理员权限运行，否则部分文件无法访问（大小可能偏小）</span><button class="admin-banner-btn" onclick="DiskenVis._elevate()">🔑 获取管理员权限</button>';
+      banner.style.display = 'flex';
+    } else {
+      banner.style.display = 'none';
+    }
+  }
+
+  window.DiskenVis = { _elevate: requestElevate };
+
+  content.innerHTML = '<div id="adminBanner" class="admin-banner" style="display:none"></div>' +
+    '<div id="dirPickerContainer"></div>' +
     '<div class="tab-bar" id="visTabs">' +
       '<button class="tab-btn active" data-tab="treemap">空间分布</button>' +
       '<button class="tab-btn" data-tab="filetypes">文件类型</button>' +
@@ -332,6 +403,7 @@
     breadcrumbStack = [];
     selectedNode = null;
     clipboard = { mode: null, items: [] };
+    updateAdminBanner();
     loadTreemap();
     loadFileTypes();
   });
@@ -646,7 +718,11 @@
     const children = currentTree.children || [];
     const dirCount = children.filter(function(c) { return c.children && c.children.length > 0; }).length;
     const fileCount = children.length - dirCount;
-    left.textContent = currentTree.name + ' - ' + children.length + ' 个项目（' + dirCount + ' 个文件夹，' + fileCount + ' 个文件）';
+    let info = currentTree.name + ' - ' + children.length + ' 个项目（' + dirCount + ' 个文件夹，' + fileCount + ' 个文件）';
+    if (currentTree === rootTree && lastScanTruncated) {
+      info += '  ⚠️ 已扫描 ' + lastFilesScanned + ' 个文件，结果部分截断（建议以管理员权限运行获得完整结果）';
+    }
+    left.textContent = info;
     right.textContent = '总大小: ' + Disken.formatSize(currentTree.size || 0);
   }
 
@@ -674,6 +750,7 @@
   async function loadTreemap() {
     const container = document.getElementById('treemapContainer');
     selectedNode = null;
+    checkAdmin();
 
     if (!currentPath || currentPath === '/') {
       container.innerHTML = '<div class="loading"><div class="spinner"></div><div class="loading-text">请选择目录开始扫描</div></div>';
@@ -704,6 +781,8 @@
       rootTree = data.tree;
       currentTree = data.tree;
       breadcrumbStack = [];
+      lastScanTruncated = !!data.truncated;
+      lastFilesScanned = data.filesScanned || 0;
       renderTreemap();
       renderBreadcrumb();
       updateFooter();
