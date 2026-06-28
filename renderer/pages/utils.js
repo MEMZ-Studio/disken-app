@@ -1,5 +1,19 @@
 /* Disken Shared Utilities */
 const Disken = {
+  version: '1.4.x',
+
+  async loadVersion() {
+    try {
+      const data = await this.api('/api/version');
+      if (data && data.version) {
+        this.version = data.version;
+        document.querySelectorAll('.disken-version').forEach(el => {
+          el.textContent = 'v' + this.version;
+        });
+      }
+    } catch(e) {}
+  },
+
   // API helper
   async api(url, opts) {
     try {
@@ -421,7 +435,7 @@ const Disken = {
           </a>
         `).join('')}
       </nav>
-      <div class="sidebar-footer">磁盘精灵 v1.4.2</div>
+      <div class="sidebar-footer">磁盘精灵 <span class="disken-version">v${this.version}</span></div>
     </aside>`;
   },
 
@@ -440,6 +454,8 @@ const Disken = {
       ${this.topbar(title)}
       <div class="content" id="content"></div>
     </div>`;
+
+    this.loadVersion();
 
     // Optimize navigation clicks: instant visual feedback
     document.querySelectorAll('.nav-item[data-page]').forEach(link => {
@@ -486,7 +502,7 @@ const Disken = {
           <div class="about-logo">磁</div>
           <div class="about-title-group">
             <h2 class="about-title">磁盘精灵</h2>
-            <div class="about-subtitle">Disken v1.4.2</div>
+            <div class="about-subtitle">Disken <span class="disken-version">v${this.version}</span></div>
           </div>
         </div>
         <div class="about-body">

@@ -4,6 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const os = require('os');
 const { execFileSync } = require('child_process');
+const APP_VERSION = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
 
 function isAdmin() {
   try {
@@ -236,6 +237,9 @@ function startServer() {
       const data = { isAdmin: isAdmin() };
       if (!forceRefresh) setCachedApi(pathname, data);
       return sendJSON(res, data);
+    }
+    if (pathname === '/api/version') {
+      return sendJSON(res, { version: APP_VERSION });
     }
     if (pathname === '/api/admin-elevate') {
       const success = restartAsAdmin();
