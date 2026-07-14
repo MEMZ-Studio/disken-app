@@ -47,15 +47,29 @@
 .admin-btn:hover {
   background: rgba(59,130,246,0.2);
 }
+.health-card-skeleton {
+  opacity: 0.5;
+}
+.health-card-skeleton .hc-skeleton-line {
+  background: linear-gradient(90deg, #1e2230 25%, #2a2f42 50%, #1e2230 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s infinite;
+  border-radius: 4px;
+}
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
 </style>
 </head>
 <body>
 <script src="utils.js"></script>
 <script>
 (function() {
-  const content = Disken.initPage('health', '🖥️ 硬盘状态');
+  const content = Disken.initPage('health', '💽 硬盘状态');
 
   let isAdmin = false;
+  let healthPollTimer = null;
 
   content.innerHTML = `<div id="healthHeader" class="health-header"></div><div id="healthGrid" class="health-grid"></div>`;
 
@@ -101,32 +115,34 @@
     header.innerHTML = `${badge} ${action}`;
   }
 
-  async function load(forceRefresh) {
-    const opts = forceRefresh ? { refresh: true } : undefined;
-    await checkAdmin();
-    const healthData = await Disken.api('/api/disk-health', opts);
+  function renderHealthCards(healthDisks, loading) {
     const container = document.getElementById('healthGrid');
-    if (!healthData || !healthData.disks || healthData.disks.length === 0) {
+    if (!container) return;
+
+    if (!healthDisks || healthDisks.length === 0) {
       container.innerHTML = '<div class="empty-state"><div class="empty-text">无法获取硬盘信息</div></div>';
       return;
     }
-    const healthDisks = healthData.disks || [];
 
     container.innerHTML = healthDisks.map(d => {
+      const isLoading = d.smartLoading;
       const score = d.healthScore || 85;
-      const ringColor = score > 80 ? '#10b981' : score > 60 ? '#f59e0b' : '#ef4444';
+      const ringColor = isLoading ? '#6b7280' : (score > 80 ? '#10b981' : score > 60 ? '#f59e0b' : '#ef4444');
       const circumference = 2 * Math.PI * 34;
       const offset = circumference - (score / 100) * circumference;
       const hasTemp = d.temperature !== null && d.temperature !== undefined;
-      const isUsb = d.isUsb === true;
+      const diskIsUsb = d.isUsb === true;
       
       let tempDisplay, tempColor;
-      if (isUsb) {
+      if (diskIsUsb) {
         tempDisplay = '不支持';
         tempColor = 'var(--muted)';
       } else if (hasTemp) {
         tempDisplay = d.temperature + '°C';
         tempColor = d.temperature > 55 ? 'var(--danger)' : 'var(--ink)';
+      } else if (isLoading) {
+        tempDisplay = '检测中...';
+        tempColor = 'var(--accent)';
       } else {
         tempDisplay = isAdmin ? '不可用' : '需要<br>管理员权限';
         tempColor = 'var(--muted)';
@@ -139,19 +155,22 @@
       const availDisplay = d.avail || '—';
       const letters = d.driveLetters ? `（${d.driveLetters}）` : '';
       
-      function getMetricText(hasData, value, isUsb, isAdmin) {
+      function getMetricText(hasData, value, isUsb, isAdmin, isLoading) {
+        if (isLoading) return '检测中...';
         if (isUsb) return '不支持';
         if (hasData) return value;
         return isAdmin ? '不可用' : '需要<br>管理员权限';
       }
       
-      const pohDisplay = getMetricText(!!d.powerOnDisplay, d.powerOnDisplay || '', isUsb, isAdmin);
-      const readDisplayText = getMetricText(!!d.readDisplay, d.readDisplay || '', isUsb, isAdmin);
-      const writeDisplayText = getMetricText(!!d.writeDisplay, d.writeDisplay || '', isUsb, isAdmin);
-      const metricTextColor = 'var(--muted)';
+      const pohDisplay = getMetricText(!!d.powerOnDisplay, d.powerOnDisplay || '', diskIsUsb, isAdmin, isLoading);
+      const readDisplayText = getMetricText(!!d.readDisplay, d.readDisplay || '', diskIsUsb, isAdmin, isLoading);
+      const writeDisplayText = getMetricText(!!d.writeDisplay, d.writeDisplay || '', diskIsUsb, isAdmin, isLoading);
+      const metricTextColor = isLoading ? 'var(--accent)' : 'var(--muted)';
       
       let smartFooter;
-      if (isUsb) {
+      if (isLoading) {
+        smartFooter = '⏳ 正在读取S.M.A.R.T.数据...';
+      } else if (diskIsUsb) {
         smartFooter = '🔌 移动硬盘不支持S.M.A.R.T.';
       } else if (d.smartAvailable) {
         smartFooter = '✅ S.M.A.R.T. 数据已获取';
@@ -160,13 +179,17 @@
       } else {
         smartFooter = '🔒 获取管理员权限查看S.M.A.R.T.';
       }
+
+      const cardClass = 'health-card' + (isLoading ? ' health-card-skeleton' : '');
+      const statusText = isLoading ? '检测中' : (d.status || (score > 80 ? '健康' : score > 60 ? '注意' : '警告'));
+      const statusClass = isLoading ? 'caution' : (score > 80 ? 'normal' : 'caution');
       
-      return `<div class="health-card">
+      return `<div class="${cardClass}">
         <div class="hc-header">
-          <span class="hc-name">${d.model || d.name}${letters}${isUsb ? ' 🔌' : ''}</span>
-          <span class="hc-status ${score > 80 ? 'normal' : 'caution'}">
-            <span style="width:6px;height:6px;border-radius:50%;background:${score > 80 ? '#10b981' : '#f59e0b'};display:inline-block"></span>
-            ${d.status || (score > 80 ? '健康' : score > 60 ? '注意' : '警告')}
+          <span class="hc-name">${d.model || d.name}${letters}${diskIsUsb ? ' 🔌' : ''}</span>
+          <span class="hc-status ${statusClass}">
+            <span style="width:6px;height:6px;border-radius:50%;background:${ringColor};display:inline-block"></span>
+            ${statusText}
           </span>
         </div>
         <div class="health-score-ring">
@@ -174,7 +197,7 @@
             <circle cx="40" cy="40" r="34" fill="none" stroke="#1e2230" stroke-width="5"/>
             <circle cx="40" cy="40" r="34" fill="none" stroke="${ringColor}" stroke-width="5"
               stroke-dasharray="${circumference}" stroke-dashoffset="${offset}"
-              stroke-linecap="round" transform="rotate(-90, 40, 40)"/>
+              stroke-linecap="round" transform="rotate(-90, 40, 40)" style="transition:stroke-dashoffset 0.5s ease,stroke 0.3s;"/>
           </svg>
           <div class="score-text" style="color:${ringColor}">${score}</div>
         </div>
@@ -192,7 +215,7 @@
             <div class="lbl">温度</div>
           </div>
           <div class="hc-metric">
-            <div class="val" style="color:var(--ink)">${d.type}</div>
+            <div class="val" style="color:var(--ink)">${isLoading ? '—' : d.type}</div>
             <div class="lbl">类型</div>
           </div>
           <div class="hc-metric">
@@ -200,11 +223,11 @@
             <div class="lbl">通电时间</div>
           </div>
           <div class="hc-metric">
-            <div class="val" style="color:${hasReadWrite ? 'var(--accent)' : metricTextColor};font-size:12px">${readDisplayText}</div>
+            <div class="val" style="color:${(hasReadWrite && !isLoading) ? 'var(--accent)' : metricTextColor};font-size:12px">${readDisplayText}</div>
             <div class="lbl">总计读取</div>
           </div>
           <div class="hc-metric">
-            <div class="val" style="color:${hasReadWrite ? 'var(--accent2)' : metricTextColor};font-size:12px">${writeDisplayText}</div>
+            <div class="val" style="color:${(hasReadWrite && !isLoading) ? 'var(--accent2)' : metricTextColor};font-size:12px">${writeDisplayText}</div>
             <div class="lbl">总计写入</div>
           </div>
         </div>
@@ -212,6 +235,72 @@
           ${perfInfo ? '<br>' + perfInfo : ''}</div>
       </div>`;
     }).join('');
+  }
+
+  function renderSkeletonFromDisks(disks) {
+    const skeleton = disks.map(d => ({
+      model: d.label || d.mount,
+      name: d.device,
+      type: '',
+      healthScore: 85,
+      smartLoading: true,
+      smartAvailable: false,
+      isUsb: false,
+      totalBytes: d.totalBytes,
+      availBytes: d.availBytes,
+      total: d.total,
+      avail: d.avail,
+      driveLetters: d.mount,
+      temperature: null,
+      powerOnDisplay: null,
+      readDisplay: null,
+      writeDisplay: null,
+      perfReadBytesPerSec: null,
+      perfWriteBytesPerSec: null,
+      status: '检测中'
+    }));
+    renderHealthCards(skeleton, true);
+  }
+
+  async function fetchAndRenderHealth(opts) {
+    try {
+      const healthData = await Disken.api('/api/disk-health', opts);
+      if (healthData && healthData.disks) {
+        renderHealthCards(healthData.disks, healthData.loading);
+        if (healthData.loading) {
+          if (healthPollTimer) clearTimeout(healthPollTimer);
+          healthPollTimer = setTimeout(() => fetchAndRenderHealth(), 3000);
+        }
+      }
+    } catch(e) {
+      console.error('[Health] health data error:', e);
+      const container = document.getElementById('healthGrid');
+      if (container) container.innerHTML = '<div class="empty-state"><div class="empty-text">健康数据加载失败</div></div>';
+    }
+  }
+
+  async function load(forceRefresh) {
+    const opts = forceRefresh ? { refresh: true } : undefined;
+    checkAdmin();
+
+    let diskData;
+    try {
+      const res = await Disken.api('/api/disks', opts);
+      diskData = res;
+    } catch(e) {
+      diskData = null;
+    }
+
+    if (diskData && diskData.disks && diskData.disks.length > 0) {
+      requestAnimationFrame(() => {
+        renderSkeletonFromDisks(diskData.disks);
+      });
+      fetchAndRenderHealth(opts);
+    } else {
+      const container = document.getElementById('healthGrid');
+      if (container) container.innerHTML = '<div class="empty-state"><div class="empty-text">无法获取硬盘信息</div></div>';
+      fetchAndRenderHealth(opts);
+    }
   }
 
   function formatBytes(bytes) {
@@ -225,7 +314,12 @@
   window.requestElevate = requestElevate;
 
   load();
-  setInterval(() => load(false), 30000);
+  const refreshInterval = setInterval(() => load(false), 30000);
+
+  window.addEventListener('beforeunload', () => {
+    clearInterval(refreshInterval);
+    if (healthPollTimer) clearTimeout(healthPollTimer);
+  });
 })();
 </script>
 </body>

@@ -33,7 +33,6 @@
     </div>
   `;
 
-  // Re-add refresh button to topbar (after innerHTML reset)
   const topbar = document.querySelector('.topbar');
   if (topbar) {
     Disken.addRefreshButton('content', load);
@@ -44,11 +43,73 @@
     }
   }
 
+  let barChart = null;
+  let resizeHandler = null;
+  let healthPollTimer = null;
+
+  function renderHealthGauges(disks, isLoading) {
+    const el = document.getElementById('chartHealthGauge');
+    if (!el) return;
+    const ink = Disken.cssVar('--ink');
+    const muted = Disken.cssVar('--muted');
+    const html = disks.map(d => {
+      const score = d.healthScore || 85;
+      const color = d.smartLoading ? '#6b7280' : (score > 80 ? '#10b981' : score > 60 ? '#f59e0b' : '#ef4444');
+      const r = 50;
+      const c = 2 * Math.PI * r;
+      const offset = c - (score / 100) * c;
+      const name = d.model || d.name || d.driveLetters;
+      const typeLabel = d.smartLoading ? '检测中...' : (d.type || '');
+      return `
+      <div style="text-align:center;opacity:${d.smartLoading ? '0.6' : '1'};transition:opacity 0.3s;">
+        <svg width="120" height="120" viewBox="0 0 120 120">
+          <circle cx="60" cy="60" r="${r}" fill="none" stroke="#1e2230" stroke-width="10"/>
+          <circle cx="60" cy="60" r="${r}" fill="none" stroke="${color}" stroke-width="10"
+            stroke-dasharray="${c}" stroke-dashoffset="${offset}" stroke-linecap="round"
+            transform="rotate(-90, 60, 60)" style="transition:stroke-dashoffset 0.5s ease,stroke 0.3s;"/>
+          <text x="60" y="55" text-anchor="middle" fill="${ink}" font-size="22" font-weight="700">${score}</text>
+          <text x="60" y="75" text-anchor="middle" fill="${muted}" font-size="10">健康分</text>
+        </svg>
+        <div style="margin-top:0.5rem;font-size:0.8rem;color:${ink};font-weight:600;">${name}</div>
+        <div style="font-size:0.7rem;color:${d.smartLoading ? 'var(--accent)' : muted}">${typeLabel}</div>
+      </div>`;
+    }).join('');
+    el.innerHTML = `<div style="display:flex;flex-wrap:wrap;justify-content:center;align-items:center;height:100%;padding:1rem 0;gap:1.5rem;">${html}</div>`;
+  }
+
+  function renderHealthFromDisks(disks) {
+    const healthDisks = disks.map(d => ({
+      model: d.label || d.mount,
+      name: d.device,
+      type: '检测中...',
+      healthScore: 85,
+      smartLoading: true,
+      driveLetters: d.mount
+    }));
+    renderHealthGauges(healthDisks, true);
+  }
+
+  async function fetchAndRenderHealth(opts) {
+    try {
+      const healthData = await Disken.api('/api/disk-health', opts);
+      if (healthData && healthData.disks) {
+        renderHealthGauges(healthData.disks, healthData.loading);
+        if (healthData.loading) {
+          if (healthPollTimer) clearTimeout(healthPollTimer);
+          healthPollTimer = setTimeout(() => fetchAndRenderHealth(), 3000);
+        }
+      }
+    } catch(e) {
+      console.error('[Load] health data error:', e);
+      const el = document.getElementById('chartHealthGauge');
+      if (el) el.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--warning);">健康数据加载失败</div>';
+    }
+  }
+
   async function load(forceRefresh) {
     const opts = forceRefresh ? { refresh: true } : undefined;
     let diskData, sysInfo;
 
-    // 先快速加载磁盘列表和系统信息（这两个很快）
     try {
       const results = await Promise.allSettled([
         Disken.api('/api/disks', opts),
@@ -74,7 +135,6 @@
     }
     const disks = diskData.disks;
 
-    // System info
     const sysRow = document.getElementById('sysInfoRow');
     if (sysInfo && sysRow) {
       const infoItems = [];
@@ -101,103 +161,80 @@
       sysRow.style.display = 'none';
     }
 
-    // Disk cards - 立即显示，不等健康数据
-    document.getElementById('diskCards').innerHTML = disks.map(d => {
-      const pct = d.usedPercent || 0;
-      const barClass = pct < 70 ? 'safe' : pct < 90 ? 'warn' : 'danger';
-      return `<div class="disk-card">
-        <div class="disk-card-header">
-          <span class="disk-card-label">${d.label || d.mount}</span>
-          <span class="disk-card-type">${d.device}</span>
-        </div>
-        <div class="disk-progress"><div class="disk-progress-bar ${barClass}" style="width:${pct}%"></div></div>
-        <div class="disk-stats">
-          <span>已用 ${d.used}</span><span>可用 ${d.avail}</span><span>总计 ${d.total}</span>
-        </div>
-        <div class="disk-stats" style="margin-top:0.3rem;font-size:0.75rem;color:${pct > 85 ? 'var(--danger)' : 'var(--muted)'}">
-          ${pct.toFixed(1)}% 已使用
-        </div>
-      </div>`;
-    }).join('');
+    requestAnimationFrame(() => {
+      document.getElementById('diskCards').innerHTML = disks.map(d => {
+        const pct = d.usedPercent || 0;
+        const barClass = pct < 70 ? 'safe' : pct < 90 ? 'warn' : 'danger';
+        return `<div class="disk-card">
+          <div class="disk-card-header">
+            <span class="disk-card-label">${d.label || d.mount}</span>
+            <span class="disk-card-type">${d.device}</span>
+          </div>
+          <div class="disk-progress"><div class="disk-progress-bar ${barClass}" style="width:${pct}%"></div></div>
+          <div class="disk-stats">
+            <span>已用 ${d.used}</span><span>可用 ${d.avail}</span><span>总计 ${d.total}</span>
+          </div>
+          <div class="disk-stats" style="margin-top:0.3rem;font-size:0.75rem;color:${pct > 85 ? 'var(--danger)' : 'var(--muted)'}">
+            ${pct.toFixed(1)}% 已使用
+          </div>
+        </div>`;
+      }).join('');
 
-    // Stats
-    let total = 0, used = 0, avail = 0;
-    disks.forEach(d => { total += d.totalBytes || 0; used += d.usedBytes || 0; avail += d.availBytes || 0; });
-    document.getElementById('statDrives').textContent = disks.length;
-    document.getElementById('statTotal').textContent = Disken.formatSize(total);
-    document.getElementById('statUsed').textContent = Disken.formatSize(used);
-    document.getElementById('statAvail').textContent = Disken.formatSize(avail);
+      let total = 0, used = 0, avail = 0;
+      disks.forEach(d => { total += d.totalBytes || 0; used += d.usedBytes || 0; avail += d.availBytes || 0; });
+      document.getElementById('statDrives').textContent = disks.length;
+      document.getElementById('statTotal').textContent = Disken.formatSize(total);
+      document.getElementById('statUsed').textContent = Disken.formatSize(used);
+      document.getElementById('statAvail').textContent = Disken.formatSize(avail);
+    });
 
-    // Bar chart
-    if (typeof echarts !== 'undefined') {
-      const el = document.getElementById('chartDiskBar');
-      const chart = echarts.init(el, null, { renderer: 'svg' });
-      const accent = Disken.cssVar('--accent');
-      const accent2 = Disken.cssVar('--accent2');
-      const danger = Disken.cssVar('--danger');
-      const muted = Disken.cssVar('--muted');
-      const ink = Disken.cssVar('--ink');
-      const rule = Disken.cssVar('--rule');
-      chart.setOption({
-        animation: false,
-        tooltip: { trigger: 'axis', appendToBody: true,
-          formatter: p => { const d = p[0]; return `${d.name}<br/>已用: ${Disken.formatSize(d.value)} / ${d.data.totalFormatted}`; }
-        },
-        grid: { left: 100, right: 30, top: 20, bottom: 30 },
-        xAxis: { type: 'value', axisLabel: { color: muted, formatter: v => Disken.formatSize(v) }, splitLine: { lineStyle: { color: rule } }, axisLine: { lineStyle: { color: rule } } },
-        yAxis: { type: 'category', data: disks.map(d => d.label || d.mount), axisLabel: { color: ink }, axisLine: { lineStyle: { color: rule } }, axisTick: { show: false } },
-        series: [{
-          type: 'bar',
-          data: disks.map(d => ({ value: d.usedBytes, totalFormatted: d.total, itemStyle: { color: d.usedPercent > 85 ? danger : d.usedPercent > 70 ? accent : accent2 } })),
-          barWidth: 20,
-          label: { show: true, position: 'right', formatter: p => Disken.formatSize(p.value), color: muted, fontSize: 11 }
-        }]
-      });
-      window.addEventListener('resize', () => chart.resize());
-    }
+    renderHealthFromDisks(disks);
+    fetchAndRenderHealth(opts);
 
-    // 健康数据单独异步加载（较慢，不阻塞UI）
-    const healthEl = document.getElementById('chartHealthGauge');
-    if (healthEl) {
-      healthEl.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--muted);">正在加载健康数据...</div>';
-    }
-    try {
-      const healthData = await Disken.api('/api/disk-health', opts);
-      if (healthData && healthData.disks) {
-        const hDisks = healthData.disks;
-        const el = document.getElementById('chartHealthGauge');
-        const ink = Disken.cssVar('--ink');
+    requestAnimationFrame(() => {
+      if (typeof echarts !== 'undefined') {
+        const el = document.getElementById('chartDiskBar');
+        if (!barChart) {
+          barChart = echarts.init(el, null, { renderer: 'svg' });
+        }
+        const accent = Disken.cssVar('--accent');
+        const accent2 = Disken.cssVar('--accent2');
+        const danger = Disken.cssVar('--danger');
         const muted = Disken.cssVar('--muted');
-        el.innerHTML = `<div style="display:flex;flex-wrap:wrap;justify-content:center;align-items:center;height:100%;padding:1rem 0;gap:1.5rem;">` +
-          hDisks.map(d => {
-            const score = d.healthScore || 85;
-            const color = score > 80 ? '#10b981' : score > 60 ? '#f59e0b' : '#ef4444';
-            const r = 50;
-            const c = 2 * Math.PI * r;
-            const offset = c - (score / 100) * c;
-            return `
-            <div style="text-align:center;">
-              <svg width="120" height="120" viewBox="0 0 120 120">
-                <circle cx="60" cy="60" r="${r}" fill="none" stroke="#1e2230" stroke-width="10"/>
-                <circle cx="60" cy="60" r="${r}" fill="none" stroke="${color}" stroke-width="10"
-                  stroke-dasharray="${c}" stroke-dashoffset="${offset}" stroke-linecap="round"
-                  transform="rotate(-90, 60, 60)"/>
-                <text x="60" y="55" text-anchor="middle" fill="${ink}" font-size="22" font-weight="700">${score}</text>
-                <text x="60" y="75" text-anchor="middle" fill="${muted}" font-size="10">健康分</text>
-              </svg>
-              <div style="margin-top:0.5rem;font-size:0.8rem;color:${ink};font-weight:600;">${d.model || d.name}</div>
-              <div style="font-size:0.7rem;color:${muted}">${d.type}</div>
-            </div>`;
-          }).join('') + `</div>`;
+        const ink = Disken.cssVar('--ink');
+        const rule = Disken.cssVar('--rule');
+        barChart.setOption({
+          animation: false,
+          tooltip: { trigger: 'axis', appendToBody: true,
+            formatter: p => { const d = p[0]; return `${d.name}<br/>已用: ${Disken.formatSize(d.value)} / ${d.data.totalFormatted}`; }
+          },
+          grid: { left: 100, right: 30, top: 20, bottom: 30 },
+          xAxis: { type: 'value', axisLabel: { color: muted, formatter: v => Disken.formatSize(v) }, splitLine: { lineStyle: { color: rule } }, axisLine: { lineStyle: { color: rule } } },
+          yAxis: { type: 'category', data: disks.map(d => d.label || d.mount), axisLabel: { color: ink }, axisLine: { lineStyle: { color: rule } }, axisTick: { show: false } },
+          series: [{
+            type: 'bar',
+            data: disks.map(d => ({ value: d.usedBytes, totalFormatted: d.total, itemStyle: { color: d.usedPercent > 85 ? danger : d.usedPercent > 70 ? accent : accent2 } })),
+            barWidth: 20,
+            label: { show: true, position: 'right', formatter: p => Disken.formatSize(p.value), color: muted, fontSize: 11 }
+          }]
+        });
       }
-    } catch(e) {
-      console.error('[Load] health data error:', e);
-      if (healthEl) healthEl.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--warning);">健康数据加载失败</div>';
-    }
+    });
   }
 
+  if (resizeHandler) window.removeEventListener('resize', resizeHandler);
+  resizeHandler = () => { if (barChart) barChart.resize(); };
+  window.addEventListener('resize', resizeHandler);
+
   load();
-  setInterval(() => load(false), 30000);
+  const refreshInterval = setInterval(() => load(false), 30000);
+
+  window.addEventListener('beforeunload', () => {
+    clearInterval(refreshInterval);
+    if (healthPollTimer) clearTimeout(healthPollTimer);
+    if (resizeHandler) window.removeEventListener('resize', resizeHandler);
+    if (barChart) { barChart.dispose(); barChart = null; }
+  });
 })();
 </script>
 </body>

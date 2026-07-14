@@ -1,6 +1,6 @@
 {
   "name": "disken",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "description": "Disken - 简约高效的硬盘管理工具",
   "main": "main.js",
   "scripts": {
@@ -15,7 +15,6 @@
   "build": {
     "appId": "com.disken.app",
     "productName": "Disken",
-    "electronDist": "electron-local",
     "electronDownload": {
       "mirror": "https://npmmirror.com/mirrors/electron/"
     },

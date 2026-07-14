@@ -172,7 +172,7 @@ function getAllDiskSmartAsync() {
       try { worker.terminate(); } catch(e) {}
       _smartPending = null;
       reject(new Error('SMART data timeout'));
-    }, 15000);
+    }, 30000);
     worker.on('message', (msg) => {
       clearTimeout(timer);
       try { worker.terminate(); } catch(e) {}
@@ -271,16 +271,104 @@ function fallbackDisks() {
 
 // ── API: Get Disk Health (Windows only, with caching) ──
 let _diskHealthCache = { data: null, time: 0 };
-const CACHE_TTL = 15000; // 15秒缓存（刷新可强制绕过）
+const CACHE_TTL = 30000;
+
+function getDiskHealthIfCached() {
+  if (_diskHealthCache.data && (Date.now() - _diskHealthCache.time) < CACHE_TTL) {
+    return _diskHealthCache.data;
+  }
+  return null;
+}
+
+function buildSkeletonHealthFromVolumes(volumes) {
+  if (!volumes || volumes.length === 0) {
+    volumes = getDisks();
+  }
+  return volumes.map(v => ({
+    name: v.device || v.mount,
+    type: '磁盘',
+    model: v.label || v.mount,
+    temperature: null,
+    status: '检测中',
+    healthScore: 85,
+    smartAvailable: false,
+    smartLoading: true,
+    isUsb: false,
+    totalBytes: v.totalBytes || 0,
+    availBytes: v.availBytes || 0,
+    total: v.total || '—',
+    avail: v.avail || '—',
+    driveLetters: v.mount || v.device || '',
+    powerOnHours: null,
+    powerOnDisplay: null,
+    totalBytesRead: null,
+    totalBytesWritten: null,
+    readDisplay: null,
+    writeDisplay: null,
+    perfReadBytesPerSec: null,
+    perfWriteBytesPerSec: null
+  }));
+}
+
+function mergeSmartWithVolumes(smartDisks, volumes) {
+  if (!volumes || volumes.length === 0) {
+    volumes = getDisks();
+  }
+  const smartBuilt = buildDiskHealthFromSmart(smartDisks || []);
+  const smartByLetter = {};
+  const smartByDevice = {};
+  for (const sd of smartBuilt) {
+    if (sd.driveLetters) {
+      const letters = sd.driveLetters.split(',').map(l => l.trim().toUpperCase().replace(/[\\/:]/g, ''));
+      for (const l of letters) {
+        smartByLetter[l] = sd;
+      }
+    }
+    smartByDevice[sd.name] = sd;
+  }
+  return volumes.map(v => {
+    const letter = (v.mount || v.device || '').toUpperCase().replace(/[\\/:]/g, '');
+    const matched = smartByLetter[letter] || null;
+    if (matched) {
+      return { ...matched, smartLoading: false };
+    }
+    return {
+      name: v.device || v.mount,
+      type: '磁盘',
+      model: v.label || v.mount,
+      temperature: null,
+      status: '正常',
+      healthScore: 85,
+      smartAvailable: false,
+      smartLoading: false,
+      isUsb: false,
+      totalBytes: v.totalBytes || 0,
+      availBytes: v.availBytes || 0,
+      total: v.total || '—',
+      avail: v.avail || '—',
+      driveLetters: v.mount || v.device || '',
+      powerOnHours: null,
+      powerOnDisplay: null,
+      totalBytesRead: null,
+      totalBytesWritten: null,
+      readDisplay: null,
+      writeDisplay: null,
+      perfReadBytesPerSec: null,
+      perfWriteBytesPerSec: null
+    };
+  });
+}
 
 function getDiskHealth(forceRefresh) {
   const now = Date.now();
   if (!forceRefresh && _diskHealthCache.data && (now - _diskHealthCache.time) < CACHE_TTL) {
     return _diskHealthCache.data;
   }
-  const result = getDiskHealthWin();
-  _diskHealthCache = { data: result, time: now };
-  return result;
+  if (_smartPending) {
+    return buildSkeletonHealthFromVolumes(null);
+  }
+  getDiskHealthAsync(forceRefresh).catch(() => {});
+  return _diskHealthCache.data || buildSkeletonHealthFromVolumes(null);
 }
 
 async function getDiskHealthAsync(forceRefresh) {
@@ -290,12 +378,16 @@ async function getDiskHealthAsync(forceRefresh) {
   }
   try {
     const smartDisks = await getAllDiskSmartAsync();
-    const result = buildDiskHealthFromSmart(smartDisks);
+    const volumes = getDisks();
+    const result = mergeSmartWithVolumes(smartDisks, volumes);
     _diskHealthCache = { data: result, time: Date.now() };
     return result;
   } catch(e) {
-    console.log('[SMART] Async worker failed, falling back to sync:', e.message);
-    return getDiskHealth(forceRefresh);
+    console.log('[SMART] Async worker failed:', e.message);
+    const volumes = getDisks();
+    const skeleton = buildSkeletonHealthFromVolumes(volumes);
+    _diskHealthCache = { data: skeleton, time: Date.now() };
+    return skeleton;
   }
 }
 
@@ -918,12 +1010,15 @@ function analyzeJunkStream(onProgress) {
   return result;
 }
 
+function isSmartLoading() {
+  return _smartPending !== null;
+}
+
 module.exports = {
-  getDisks, getDiskHealth, getDiskHealthAsync, scanDirectory, searchFiles, analyzeFileTypes,
+  getDisks, getDiskHealth, getDiskHealthAsync, getDiskHealthIfCached, buildSkeletonHealthFromVolumes, isSmartLoading, scanDirectory, searchFiles, analyzeFileTypes,
   listDirectory, getSystemInfo, invalidateDiskCache,
   analyzeJunk, analyzeJunkStream, deleteJunkFiles,
   resolvePath, isValidDir, formatSize,
-  // Async worker-based versions (non-blocking)
   scanDirectoryAsync: (dirPath, maxDepth = 3) => runWorker('scan', dirPath, { maxDepth }).then(r => ({ tree: r.tree, truncated: r.truncated, filesScanned: r.filesScanned })),
   analyzeFileTypesAsync: (dirPath, maxDepth = 3) => runWorker('filetypes', dirPath, { maxDepth }),
   searchFilesAsync: (dirPath, query, opts = {}) => runWorker('search', dirPath, { query, maxResults: opts.maxResults || 200, typeFilter: opts.typeFilter || '', minSize: opts.minSize || 0, maxSize: opts.maxSize || Infinity, maxDepth: opts.maxDepth || 5 }).then(r => r.results),

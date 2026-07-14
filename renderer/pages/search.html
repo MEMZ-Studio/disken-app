@@ -72,6 +72,8 @@
   let currentResults = [];
   let selectedItem = null;
   let contextMenu = null;
+  let searchClickHandler = null;
+  let searchKeydownHandler = null;
 
   Disken.addDirPicker('dirPickerContainer', (path) => {
     selectedPath = path;
@@ -146,9 +148,11 @@
     contextMenu.style.display = 'none';
   }
 
-  document.addEventListener('click', function(e) {
+  if (searchClickHandler) document.removeEventListener('click', searchClickHandler);
+  searchClickHandler = function(e) {
     if (!contextMenu.contains(e.target)) hideContextMenu();
-  });
+  };
+  document.addEventListener('click', searchClickHandler);
 
   document.getElementById('ctxOpen').addEventListener('click', function() {
     if (selectedItem) openFile(selectedItem.path);
@@ -310,12 +314,21 @@
     checkIndexStatus();
   });
 
-  document.addEventListener('keydown', function(e) {
+  if (searchKeydownHandler) document.removeEventListener('keydown', searchKeydownHandler);
+  searchKeydownHandler = function(e) {
     if (e.key === 'Escape') {
       hideContextMenu();
       results.querySelectorAll('.result-item').forEach(function(r) { r.classList.remove('selected'); });
       selectedItem = null;
     }
+  };
+  document.addEventListener('keydown', searchKeydownHandler);
+
+  window.addEventListener('beforeunload', function() {
+    if (searchTimer) clearTimeout(searchTimer);
+    if (buildPollTimer) clearInterval(buildPollTimer);
+    if (searchClickHandler) document.removeEventListener('click', searchClickHandler);
+    if (searchKeydownHandler) document.removeEventListener('keydown', searchKeydownHandler);
   });
 
   input.focus();

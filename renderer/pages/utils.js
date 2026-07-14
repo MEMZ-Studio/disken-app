@@ -457,21 +457,18 @@ const Disken = {
 
     this.loadVersion();
 
-    // Optimize navigation clicks: instant visual feedback
     document.querySelectorAll('.nav-item[data-page]').forEach(link => {
       link.addEventListener('click', (e) => {
         if (link.dataset.page === activePage) {
           e.preventDefault();
           return;
         }
-        // Visual feedback: immediately set active state
         document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
         link.classList.add('active');
-        // Add brief loading indicator
-        const content = document.getElementById('content');
-        if (content) {
-          content.style.opacity = '0.4';
-          content.style.transition = 'opacity 0.1s';
+        const mainEl = document.querySelector('.main');
+        if (mainEl) {
+          mainEl.style.opacity = '0.3';
+          mainEl.style.transition = 'opacity 0.08s';
         }
       });
     });
@@ -481,6 +478,14 @@ const Disken = {
         Disken.showAbout();
       });
     }
+
+    requestAnimationFrame(() => {
+      const mainEl = document.querySelector('.main');
+      if (mainEl) {
+        mainEl.style.opacity = '1';
+        mainEl.style.transition = 'opacity 0.15s';
+      }
+    });
 
     return document.getElementById('content');
   },

@@ -263,9 +263,13 @@
   let selectedNode = null;
   let clipboard = { mode: null, items: [] };
   let chart = null;
+  let ftChart = null;
   let isAdmin = false;
   let lastScanTruncated = false;
   let lastFilesScanned = 0;
+  let visResizeHandler = null;
+  let visClickHideHandler = null;
+  let visKeydownHandler = null;
 
   async function checkAdmin() {
     try {
@@ -703,8 +707,6 @@
         showActionMenu(params.event.offsetX, params.event.offsetY);
       }
     });
-
-    window.addEventListener('resize', function() { if (chart) chart.resize(); });
   }
 
   function updateFooter() {
@@ -830,9 +832,11 @@
     actionMenu.classList.remove('show');
   }
 
-  document.addEventListener('click', function(e) {
+  if (visClickHideHandler) document.removeEventListener('click', visClickHideHandler);
+  visClickHideHandler = function(e) {
     if (!actionMenu.contains(e.target)) hideActionMenu();
-  });
+  };
+  document.addEventListener('click', visClickHideHandler);
 
   function openFile(filePath) {
     fetch('/api/open-folder', {
@@ -1017,7 +1021,8 @@
     document.getElementById('btnDelete').click();
   });
 
-  document.addEventListener('keydown', function(e) {
+  if (visKeydownHandler) document.removeEventListener('keydown', visKeydownHandler);
+  visKeydownHandler = function(e) {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
       e.preventDefault();
@@ -1041,7 +1046,8 @@
       updateToolbarState();
       hideActionMenu();
     }
-  });
+  };
+  document.addEventListener('keydown', visKeydownHandler);
 
   async function loadFileTypes() {
     const grid = document.getElementById('typeGrid');
@@ -1093,7 +1099,8 @@
       if (typeof echarts !== 'undefined') {
         const el = document.getElementById('chartFileType');
         if (el) {
-          const ftChart = echarts.init(el, null, { renderer: 'svg' });
+          if (ftChart) { ftChart.dispose(); ftChart = null; }
+          ftChart = echarts.init(el, null, { renderer: 'svg' });
           const muted = Disken.cssVar('--muted');
           const ink = Disken.cssVar('--ink');
           const rule = Disken.cssVar('--rule');
@@ -1113,7 +1120,6 @@
               itemStyle: { borderRadius: 4, borderColor: bg2, borderWidth: 2 }
             }]
           });
-          window.addEventListener('resize', function() { ftChart.resize(); });
         }
       }
     } catch(e) {
@@ -1123,6 +1129,21 @@
       }
     }
   }
+
+  if (visResizeHandler) window.removeEventListener('resize', visResizeHandler);
+  visResizeHandler = function() {
+    if (chart) chart.resize();
+    if (ftChart) ftChart.resize();
+  };
+  window.addEventListener('resize', visResizeHandler);
+
+  window.addEventListener('beforeunload', function() {
+    if (visResizeHandler) window.removeEventListener('resize', visResizeHandler);
+    if (visClickHideHandler) document.removeEventListener('click', visClickHideHandler);
+    if (visKeydownHandler) document.removeEventListener('keydown', visKeydownHandler);
+    if (chart) { chart.dispose(); chart = null; }
+    if (ftChart) { ftChart.dispose(); ftChart = null; }
+  });
 
   loadTreemap();
   loadFileTypes();

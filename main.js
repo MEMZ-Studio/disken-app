@@ -91,7 +91,7 @@ const CACHE_TTL = 60000;
 const apiCache = new Map();
 const API_CACHE_TTL = {
   '/api/disks': 5000,
-  '/api/disk-health': 10000,
+  '/api/disk-health': 30000,
   '/api/system-info': 60000,
   '/api/admin-status': 2000,
 };
@@ -177,9 +177,7 @@ function startServer() {
   // 后台预热缓存：窗口显示后异步加载数据，不阻塞启动
   function warmupCache() {
     try {
-      // 预热磁盘列表（1ms，瞬间完成）
       sc.getDisks();
-      // 预热索引（如果有缓存）
       const drives = sc.getDisks();
       for (const d of drives) {
         const idx = fi.getIndex(d.mount);
@@ -189,14 +187,12 @@ function startServer() {
       }
     } catch(e) { console.log('[Warmup] phase1 error:', e.message); }
 
-    // 磁盘健康数据（较慢）在后台异步预热，不阻塞主进程
-    setTimeout(() => {
-      sc.getDiskHealthAsync().then(() => {
-        console.log('[Warmup] Disk health preloaded successfully');
-      }).catch(e => {
-        console.log('[Warmup] health preload error:', e.message);
-      });
-    }, 500);
+    // 磁盘健康数据立即在后台异步预热（无延迟，确保窗口打开时已有缓存）
+    sc.getDiskHealthAsync().then(() => {
+      console.log('[Warmup] Disk health preloaded successfully');
+    }).catch(e => {
+      console.log('[Warmup] health preload error:', e.message);
+    });
   }
 
   server = http.createServer((req, res) => {
@@ -220,17 +216,36 @@ function startServer() {
       return sendJSON(res, data);
     }
     if (pathname === '/api/disk-health') {
-      (async () => {
-        try {
-          const disks = await sc.getDiskHealthAsync(forceRefresh);
-          const data = { disks };
-          if (!forceRefresh) setCachedApi(pathname, data);
-          sendJSON(res, data);
-        } catch(e) {
-          console.log('[API] disk-health error:', e.message);
-          sendJSON(res, { disks: sc.getDiskHealth(forceRefresh) });
+      if (!forceRefresh) {
+        const cached = getCachedApi(pathname);
+        if (cached) {
+          sendJSON(res, cached);
+          return;
         }
-      })();
+        const scCached = sc.getDiskHealthIfCached();
+        if (scCached) {
+          const hasSmartData = scCached.some(d => !d.smartLoading && d.smartAvailable);
+          const data = { disks: scCached, loading: !hasSmartData };
+          setCachedApi(pathname, data);
+          sendJSON(res, data);
+          if (!hasSmartData && !sc.isSmartLoading()) {
+            sc.getDiskHealthAsync(true).then(fullData => {
+              setCachedApi(pathname, { disks: fullData, loading: false });
+            }).catch(() => {});
+          }
+          return;
+        }
+      }
+      const volumes = sc.getDisks();
+      const skeleton = sc.buildSkeletonHealthFromVolumes(volumes);
+      const initialData = { disks: skeleton, loading: true };
+      if (!forceRefresh) setCachedApi(pathname, initialData);
+      sendJSON(res, initialData);
+      sc.getDiskHealthAsync(forceRefresh).then(fullData => {
+        if (!forceRefresh) setCachedApi(pathname, { disks: fullData, loading: false });
+      }).catch(e => {
+        console.log('[API] disk-health async error:', e.message);
+      });
       return;
     }
     if (pathname === '/api/admin-status') {
